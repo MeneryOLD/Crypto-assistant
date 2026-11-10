@@ -1,31 +1,20 @@
-FROM node:22-bookworm-slim AS build
+FROM python:3.12-slim
+
+ENV PYTHONDONTWRITEBYTECODE=1 \
+    PYTHONUNBUFFERED=1 \
+    PIP_NO_CACHE_DIR=1
 
 WORKDIR /app
 
-COPY package*.json ./
-RUN npm install
+COPY requirements.txt ./
+RUN pip install -r requirements.txt
 
-COPY tsconfig.json ./
-COPY prisma ./prisma
-RUN npx prisma generate
+COPY config.py ./
+COPY bot ./bot
+COPY collectors ./collectors
+COPY storage ./storage
 
-COPY src ./src
-RUN npm run build
+RUN useradd --create-home bot && mkdir -p /app/data && chown bot /app/data
+USER bot
 
-FROM node:22-bookworm-slim AS runtime
-
-WORKDIR /app
-ENV NODE_ENV=production
-
-COPY package.json ./
-COPY --from=build /app/package-lock.json ./package-lock.json
-RUN npm ci --omit=dev && npm cache clean --force
-
-COPY --from=build /app/node_modules/.prisma ./node_modules/.prisma
-COPY --from=build /app/node_modules/@prisma/client ./node_modules/@prisma/client
-COPY --from=build /app/dist ./dist
-COPY prisma ./prisma
-
-USER node
-
-CMD ["sh", "-c", "npm run db:deploy && npm start"]
+CMD ["python", "-m", "bot.main"]

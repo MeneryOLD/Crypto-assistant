@@ -112,33 +112,86 @@ The interface will also use inline keyboards and interactive buttons.
 
 | Component | Technology |
 |---|---|
-| Language | TypeScript |
-| Runtime | Node.js |
-| Telegram framework | grammY |
-| Database | PostgreSQL |
-| ORM | Prisma |
-| HTTP server | Fastify |
-| AI integration | LLM API |
-| Market data | CoinGecko and exchange APIs |
-| Background jobs | BullMQ (later stage) |
-| Queue/cache | Redis (later stage) |
+| Language | Python 3.12 |
+| Telegram framework | aiogram 3 |
+| Database | SQLite → PostgreSQL later |
+| ORM | SQLAlchemy 2 (async) |
+| AI integration | Claude API (`anthropic` SDK) |
+| Market data | Exchanges via ccxt (Binance, Bybit, OKX, Kraken) |
+| News | RSS via feedparser, CryptoPanic, Reddit (praw) |
+| Scheduling | APScheduler (stage 5) |
 | Containerization | Docker |
-| Testing | Vitest |
+| Testing | pytest |
 | Version control | Git and GitHub |
+
+## Getting started
+
+```powershell
+python -m venv .venv
+.venv\Scripts\activate                 # Linux/macOS: source .venv/bin/activate
+pip install -r requirements-dev.txt
+copy .env.example .env                 # then put your BOT_TOKEN in .env
+python -m bot.main                     # start the bot (Ctrl+C to stop)
+pytest                                 # run the tests
+```
+
+Or with Docker: `docker compose up --build`.
+
+### Project layout
+
+```text
+bot/
+  main.py          starts the bot + background jobs (python -m bot.main)
+  jobs.py          news checks, scoring, price memory
+  notifier.py      sends alerts to users
+  handlers.py      /news /history /sources /ticker /book /arb /exchanges /help
+  screens.py       every screen (text + buttons)
+  formatting.py    number/time formatting
+collectors/
+  news.py          87 sources: Telegram channels, RSS, Google News (crypto, politics, elections, economy, regulators)
+  fear_greed.py    Crypto Fear & Greed index
+  exchanges.py     exchange connections via ccxt (Binance, Bybit, OKX, Kraken; public data)
+analysis/
+  reactions.py     BTC/ETH price at publication, +15m, +1h, +4h, +24h for every news item
+  patterns.py      average BTC move after each topic; finds the same story at other outlets
+  importance.py    importance score 1–10 with reasons
+storage/
+  db.py            SQLite: users, news items, price marks
+config.py          settings from .env
+tests/
+```
+
+## Build stages
+
+The bot is built in small stages. Each stage is tested in Telegram before the next one starts.
+
+| Stage | What gets added | Status |
+|---|---|---|
+| 1. Core | Bot runs, saves users, `/start` `/help` | ✅ done |
+| 1b. Exchanges | ccxt connections to Binance, Bybit, OKX, Kraken: `/exchanges` `/ticker` `/book` `/arb` (replaced CoinGecko prices) | ✅ done |
+| 2. Collect + remember | Worldwide sources, de-duplication, categories, BTC/ETH price memory after every item | ✅ done |
+| 2b. Easier UI | Menu buttons, tabs, pages, screens that update in place, type a coin or a word | ✅ done |
+| 2c. Deeper + more sources | 87 sources (9 fast Telegram channels every 20 s, 20 crypto media, world/regional/US politics, markets, central banks, regulators, Google News from major outlets); article view with BTC/ETH reaction and other outlets; patterns by topic; funding rates; Fear & Greed | ✅ done |
+| 2d. Importance + notifications | Every item scored 1–10 (source, event type, money, crypto relevance, confirmation by other outlets; penalties for opinion/speculation). 🔥 Top view sorted by importance; 🔔 alerts within seconds with level + category settings, no repeats of the same story, max 12/hour | 🧪 testing |
+| 3. AI analysis + instant alerts | Claude scores each new item (impact 1–10, bullish/bearish, why it matters); impact ≥ 8 is pushed to subscribers within ~1 min; `/digest` `/alerts on` | next — needs `ANTHROPIC_API_KEY` |
+| 4. Learning from history | For a new event, find similar past events and show how BTC moved after them (signals, not guarantees) | |
+| 5. Daily digest + sentiment | Morning top-10, Fear & Greed, `/sentiment` | |
+| 6. More sources | CryptoPanic, Reddit, X (paid) | |
+| 7. Deploy | Docker on a VPS (runs 24/7), Postgres | |
 
 ## Architecture
 
 The application follows a modular monolith architecture.
 
 ```text
-Telegram User
-     |
-     v
-Telegram Bot (grammY)
-     |
-     v
-Application Layer
-     |
+          Telegram User
+               |
+               v
+      Telegram Bot (aiogram)
+               |
+               v
+        Application Layer
+               |
      +-------------------+
      |                   |
      v                   v

@@ -1,10 +1,9 @@
-node_modules/
-dist/
+__pycache__/
+*.py[cod]
+.venv/
+.pytest_cache/
 .env
 .env.*
 !.env.example
-npm-debug.log*
-
-# Prisma local development database files
 *.db
 *.db-journal
