@@ -85,7 +85,14 @@ pytest                                 # tests
 ruff check .                           # lint
 ```
 
-Or with Docker: `docker compose up -d --build` (data and logs persist in the `bot_data` volume).
+Or with Docker: `docker compose up -d --build` (database and logs are kept in `./data`).
+
+**Run it 24/7 for free** on Oracle Cloud Always Free or Google Cloud e2-micro with one command — see
+[docs/DEPLOY.md](docs/DEPLOY.md):
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/MeneryOLD/Crypto-assistant/main/deploy/install.sh | bash
+```
 
 On first start the bot imports the news archive in the background (~20–40 min, progress in 📡 Status) and
 fills in prices for it; patterns and similar-event signals get richer as it does.

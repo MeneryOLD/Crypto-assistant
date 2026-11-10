@@ -16,7 +16,7 @@ COPY bot ./bot
 COPY collectors ./collectors
 COPY storage ./storage
 
-RUN useradd --create-home bot && mkdir -p /app/data && chown bot /app/data
+RUN useradd --create-home --uid 1000 bot && mkdir -p /app/data && chown bot /app/data
 USER bot
 VOLUME ["/app/data"]
 

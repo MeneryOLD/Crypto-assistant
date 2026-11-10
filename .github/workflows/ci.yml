@@ -19,6 +19,8 @@ jobs:
         run: pip install -r requirements-dev.txt
       - name: Lint
         run: ruff check .
+      - name: Check install script
+        run: shellcheck deploy/install.sh
       - name: Tests
         run: pytest -q
       - name: Docker image builds
