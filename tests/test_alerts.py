@@ -94,7 +94,7 @@ class FakeBot:
 
 
 class FakeHub:
-    names = ["binance"]
+    names = ("binance",)
 
     async def ticker(self, name, coin):
         raise RuntimeError("offline")

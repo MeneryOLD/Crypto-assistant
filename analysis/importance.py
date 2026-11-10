@@ -8,6 +8,7 @@ so users can see *why* something was rated important.
 
 from __future__ import annotations
 
+import contextlib
 import re
 from dataclasses import dataclass
 
@@ -16,7 +17,11 @@ from storage.db import NewsItem
 
 CENTRAL_BANKS = {"Federal Reserve", "ECB", "Bank of England", "Bank of Japan", "BIS"}
 REGULATORS = {"SEC", "CFTC", "ESMA (EU)", "FCA (UK)", "US Justice Dept"}  # publish many routine notices
-FAST_WIRES = {"Walter Bloomberg", "FinancialJuice", "Bloomberg (TG)", "Kobeissi Letter", "Watcher Guru", "Wu Blockchain"}
+FAST_WIRES = {
+    "Walter Bloomberg", "FinancialJuice", "Bloomberg (TG)", "Kobeissi Letter", "Watcher Guru", "Wu Blockchain",
+    "Insider Paper", "World News (TG)", "Al Jazeera (TG)", "CoinDesk (TG)", "The Block (TG)",
+}
+EXCHANGES = {"Binance Announcements", "Bybit Announcements", "OKX Announcements"}
 MAJOR = re.compile(
     r"^(reuters|associated press|ap news|bloomberg|financial times|wall street journal|wsj|cnbc|bbc|"
     r"the guardian|new york times|nyt|washington post|politico|axios|al jazeera|coindesk|the block)",
@@ -48,7 +53,8 @@ EVENTS: list[tuple[int, str, re.Pattern[str]]] = [
     (2, "law / executive order", re.compile(r"\b(executive order|signs? (bill|law)|passes? (bill|law)|stablecoin (bill|law)|market structure bill|clarity act|genius act)\b", re.I)),
     (2, "election outcome", re.compile(r"\b(wins? (the )?(election|presidency|vote)|election results?|concedes|resigns?|steps down|snap election)\b", re.I)),
     (2, "institutional flows", re.compile(r"\b(etf (inflows?|outflows?)|blackrock|strategy (buys|acquires)|saylor|treasury (buys|adds))\b", re.I)),
-    (1, "whales / on-chain", re.compile(r"\b(whales?|on-?chain|exchange (reserves|outflows|inflows))\b", re.I)),
+    (3, "exchange listing", re.compile(r"\b(will list|lists|new listing|delist\w*|launchpool|launchpad|hodler airdrops?|will (add|launch) .{0,25}(perpetual|futures|spot))\b", re.I)),
+    (1, "whales / on-chain", re.compile(r"\b(whales?|on-?chain|exchange (reserves|outflows|inflows)|transferred (from|to)|unknown wallet)\b", re.I)),
 ]
 DECISIVE = {"rate decision", "war / attack", "collapse / default", "ETF decision", "crypto ban / reserve", "regulator action"}
 BREAKING = re.compile(r"^\W*(breaking|just in|urgent|alert|flash)\b|🚨", re.I)
@@ -82,10 +88,8 @@ class Score:
 def _max_millions(text: str) -> float:
     best = max((int(m.group(1).replace(",", "")) / 1e6 for m in RAW_DOLLARS.finditer(text)), default=0.0)
     for m in MILLIONS.finditer(text):
-        try:
+        with contextlib.suppress(ValueError):
             best = max(best, float(m.group(1).replace(",", "")))
-        except ValueError:
-            pass
     return best
 
 
@@ -110,7 +114,10 @@ def score(item: NewsItem, nearby: list[NewsItem] | None = None) -> Score:
     elif item.source in REGULATORS:
         points += 1
         reasons.append("official regulator")
-    elif item.source in FAST_WIRES:
+    elif item.source in EXCHANGES:
+        points += 1
+        reasons.append("exchange announcement")
+    elif item.source in FAST_WIRES or item.source.startswith("X: @"):
         points += 1
         reasons.append("breaking wire")
     elif MAJOR.match(item.source):
@@ -162,5 +169,8 @@ def score(item: NewsItem, nearby: list[NewsItem] | None = None) -> Score:
     if OFF_TOPIC.search(title):
         points -= 3
         reasons.append("off-topic")
+    if item.source.startswith("r/"):
+        points -= 1
+        reasons.append("community post")
 
     return Score(max(1, min(10, round(points))), reasons)

@@ -81,9 +81,7 @@ def patterns(reactions: list[Reaction], by: str = "topic") -> tuple[Pattern | No
 
 _WORD_RE = re.compile(r"[a-z0-9$]+")
 _STOP = set(
-    "the a an and or of to in on for with at by from as is are was were be been after over into about amid "
-    "says said say new will would could may its it this that their his her than more says live update updates "
-    "what why how who when just breaking".split()
+    ["the", "a", "an", "and", "or", "of", "to", "in", "on", "for", "with", "at", "by", "from", "as", "is", "are", "was", "were", "be", "been", "after", "over", "into", "about", "amid", "says", "said", "say", "new", "will", "would", "could", "may", "its", "it", "this", "that", "their", "his", "her", "than", "more", "says", "live", "update", "updates", "what", "why", "how", "who", "when", "just", "breaking"]
 )
 
 
@@ -136,7 +134,7 @@ class PatternCache:
 
     async def for_item(self, item: NewsItem) -> Pattern | None:
         if time.monotonic() - self._at > self.ttl:
-            _, groups = patterns(await self.db.all_reactions(days=30), by="topic")
+            _, groups = patterns(await self.db.all_reactions(days=120), by="topic")
             self._by_topic = {p.name: p for p in groups}
             self._at = time.monotonic()
         found = [self._by_topic[t] for t in topics_of(item) if t in self._by_topic and 240 in self._by_topic[t].avg]

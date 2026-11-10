@@ -11,6 +11,8 @@ from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup, KeyboardBu
 
 from analysis.importance import level
 from analysis.patterns import Pattern, patterns, related, same_story, topics_of
+from analysis.sentiment import TONE_LABEL, headline_tone
+from analysis.similar import MIN_EVENTS, Outlook, SimilarityEngine
 from bot.formatting import CATEGORY_ICONS, ago, ex_name, fmt_big, fmt_pct, fmt_price, h, updated_line
 from collectors.exchanges import ExchangeError, ExchangeHub, Ticker, best_spread
 from collectors.fear_greed import FearGreed, FearGreedClient
@@ -24,12 +26,15 @@ Screen = tuple[str, InlineKeyboardMarkup | None]
 
 BTN_NEWS, BTN_TOP, BTN_MARKETS = "📰 News", "🔥 Top", "💹 Markets"
 BTN_HISTORY, BTN_ALERTS, BTN_STATUS = "🧠 History", "🔔 Alerts", "📡 Status"
+BTN_SENTIMENT, BTN_CALENDAR, BTN_DIGEST = "📊 Sentiment", "📅 Calendar", "☀️ Digest"
+BTN_HOME, BTN_SETTINGS, BTN_HELP = "🏠 Home", "⚙️ Settings", "❓ Help"
 
+# Alerts, Digest and Status now live inside ⚙️ Settings; their old buttons still work for older keyboards.
 MAIN_MENU = ReplyKeyboardMarkup(
     keyboard=[
-        [KeyboardButton(text=BTN_TOP), KeyboardButton(text=BTN_NEWS)],
-        [KeyboardButton(text=BTN_MARKETS), KeyboardButton(text=BTN_HISTORY)],
-        [KeyboardButton(text=BTN_ALERTS), KeyboardButton(text=BTN_STATUS)],
+        [KeyboardButton(text=BTN_HOME), KeyboardButton(text=BTN_TOP), KeyboardButton(text=BTN_NEWS)],
+        [KeyboardButton(text=BTN_SENTIMENT), KeyboardButton(text=BTN_MARKETS), KeyboardButton(text=BTN_CALENDAR)],
+        [KeyboardButton(text=BTN_HISTORY), KeyboardButton(text=BTN_SETTINGS), KeyboardButton(text=BTN_HELP)],
     ],
     resize_keyboard=True,
     is_persistent=True,
@@ -79,6 +84,23 @@ class AlertsCB(CallbackData, prefix="al"):
     value: str = ""
 
 
+class SettingsCB(CallbackData, prefix="se"):
+    action: str = "show"  # show | reminders | setup
+
+
+BACK_TO_SETTINGS = InlineKeyboardButton(text="◀️ Settings", callback_data=SettingsCB().pack())
+
+
+class PauseCB(CallbackData, prefix="pa"):
+    minutes: int = 0  # 0 = resume, -1 = until morning, otherwise minutes
+    back: str = "settings"  # settings = show Settings after; alert = just confirm with a pop-up
+
+
+class SimilarCB(CallbackData, prefix="sm"):
+    id: int
+    new: int = 0  # 1 = send as a new message (from an alert)
+
+
 class HistoryCB(CallbackData, prefix="hi"):
     cat: str = "all"
     hz: int = 60
@@ -119,62 +141,31 @@ def _source_icon(name: str) -> str:
     return "⚡ " if name in FAST_SOURCES else ""
 
 
-async def home(
-    db: Database,
-    hub: ExchangeHub,
-    collector: NewsCollector,
-    fg: FearGreedClient,
-    first_name: str | None,
-    user: User | None = None,
-) -> str:
-    btc, eth, fear_greed = await asyncio.gather(
-        hub.ticker(hub.names[0], "BTC"), hub.ticker(hub.names[0], "ETH"), fg.get(), return_exceptions=True
-    )
-    prices = []
-    for coin, t in (("BTC", btc), ("ETH", eth)):
-        if isinstance(t, Ticker):
-            prices.append(f"<b>{coin}</b> ${fmt_price(t.last)}  {fmt_pct(t.change_pct)}")
-    news_24h = await db.count_news(hours=24)
-    online = sum(1 for s in collector.status.values() if s.ok)
-    top = dedupe_stories(await db.top_news(hours=6, limit=40))[:4]
-    if not top:
-        top = await db.recent_news(limit=4)
-
-    lines = [f"👋 <b>Hi{', ' + h(first_name) if first_name else ''}! This is Vexora</b>", "<i>Your crypto & world news radar</i>", ""]
-    lines += prices or ["<i>Prices unavailable right now</i>"]
-    if isinstance(fear_greed, FearGreed):
-        lines.append(fear_greed_line(fear_greed))
-    lines += ["", f"📰 <b>{news_24h:,}</b> news in 24 h · 📡 {online}/{len(collector.sources)} sources online"]
-    if user is not None:
-        if user.alerts_on:
-            name = next((n for lvl, n, _ in ALERT_LEVELS if lvl == user.alert_level), f"{user.alert_level}+")
-            lines.append(f"🔔 Alerts on: <b>{h(name)}</b> — change in {BTN_ALERTS}")
-        else:
-            lines.append(f"🔕 Alerts are off — turn on in {BTN_ALERTS}")
-    if top:
-        lines += ["", "🔥 <b>Most important right now</b>"]
-        lines += [
-            f"{badge(n) or CATEGORY_ICONS.get(n.category, '•')} {_source_icon(n.source)}<a href=\"{h(n.url)}\">{h(n.title)}</a>"
-            for n in top
-        ]
-    lines += ["", "Use the buttons below 👇  or just type a coin (<code>sol</code>) or a word (<code>fed</code>)."]
-    return "\n".join(lines)
-
-
-HELP = (
-    "<b>How to use Vexora</b>\n\n"
-    f"{BTN_TOP} — the most important news of the last 24 h, one line per story\n"
-    f"{BTN_NEWS} — world news by category; tap a number to open the story\n"
-    f"{BTN_ALERTS} — get important news the second it's published; choose level and categories\n"
-    f"{BTN_MARKETS} — prices, funding rates and order books on Binance, Bybit, OKX, Kraken\n"
-    f"{BTN_HISTORY} — how BTC moved after news, and average patterns by topic\n"
-    f"{BTN_STATUS} — are all sources and exchanges working\n\n"
-    "<b>Type anything:</b>\n"
-    "<code>btc</code>, <code>sol</code> → that coin's prices\n"
-    "<code>trump</code>, <code>fed</code>, <code>ETF</code> → search the news\n\n"
-    "⚡ marks fast Telegram sources (seconds after events)\n"
-    "🔴 9–10 critical · 🟠 7–8 important · 🟡 5–6 notable · ⚪ minor\n"
-    "<i>Commands also work: /news /markets /history /status</i>"
+HELP = "\n".join(
+    [
+        '<b>How to use Vexora</b>',
+        '',
+        f'{BTN_HOME} — your dashboard: prices, mood, next big release, top 3 stories',
+        f'{BTN_TOP} — the most important news of the last 24 h, one line per story',
+        f'{BTN_NEWS} — world news by category; tap a number to open a story',
+        f'{BTN_SENTIMENT} — market mood 0–100: Fear &amp; Greed, news tone, futures positioning, liquidity',
+        f'{BTN_MARKETS} — prices, funding rates and order books on Binance, Bybit, OKX, Kraken',
+        f'{BTN_CALENDAR} — CPI, jobs, Fed and other releases that move markets, in your time zone',
+        f'{BTN_HISTORY} — how BTC moved after news; patterns by topic',
+        f'{BTN_SETTINGS} — alerts, quiet hours, morning brief, time zone, pause, system status',
+        '',
+        '<b>Just type:</b>',
+        "<code>btc</code>, <code>sol</code> → that coin's prices",
+        '<code>trump</code>, <code>fed</code>, <code>ETF</code> → search the news',
+        '<code>/similar fed rate hike</code> → what BTC did after similar news in the past',
+        '',
+        '<b>On every alert:</b> 📖 details · 🧠 similar past events · 🔕 pause 1 h or until morning',
+        '',
+        '⚡ fast Telegram sources (seconds after events)',
+        '🔴 9–10 critical · 🟠 7–8 important · 🟡 5–6 notable · ⚪ minor',
+        '🟢 bullish · 🔴 bearish tone for crypto',
+        '<i>Signals, not financial advice.</i>',
+    ]
 )
 
 
@@ -289,15 +280,39 @@ def _reaction_table(marks: dict[tuple[str, int], float]) -> str | None:
     return f"<pre>{h(text)}</pre>"
 
 
-async def article(db: Database, news_id: int, cat: str = "all", page: int = 0, q: str = "", s: str = "new") -> Screen:
+def outlook_line(outlook: Outlook | None) -> str | None:
+    """One-line summary of what BTC did after similar past events."""
+    if outlook is None or 240 not in outlook.stats or outlook.stats[240].n < MIN_EVENTS:
+        return None
+    s = outlook.stats[240]
+    conf = f" ({outlook.confidence} confidence)" if outlook.confidence != "none" else ""
+    vol = outlook.volatility_ratio
+    vol_text = f" · moves {vol:.1f}× usual size" if vol and vol >= 1.3 else ""
+    return (
+        f"🧠 <b>{outlook.signal}</b>{conf}\n"
+        f"After {s.n} similar past events BTC moved {fmt_pct(s.median, dot=False)} (median) in 4h, "
+        f"up {s.up_share * 100:.0f}% of the time{vol_text}"
+    )
+
+
+async def article(
+    db: Database,
+    news_id: int,
+    cat: str = "all",
+    page: int = 0,
+    q: str = "",
+    s: str = "new",
+    similar: SimilarityEngine | None = None,
+) -> Screen:
     back = InlineKeyboardButton(text="◀️ Back to list", callback_data=NewsCB(cat=cat, page=page, q=q, s=s).pack())
     item = await db.get_news(news_id)
     if item is None:
         return "This story is no longer stored.", InlineKeyboardMarkup(inline_keyboard=[[back]])
 
-    marks, nearby = await asyncio.gather(
+    marks, nearby, outlook = await asyncio.gather(
         db.marks_for(item.id),
         db.news_between(item.event_at - timedelta(hours=24), item.event_at + timedelta(hours=24)),
+        similar.for_item(item) if similar else asyncio.sleep(0, result=None),
     )
     others = related(item, nearby)
     topics = topics_of(item)
@@ -313,6 +328,8 @@ async def article(db: Database, news_id: int, cat: str = "all", page: int = 0, q
         lines.append(f"{emoji} <b>{label} · {item.importance}/10</b>")
         if item.importance_reasons:
             lines.append(f"<i>Why: {h(item.importance_reasons)}</i>")
+    tone = item.sentiment if item.sentiment is not None else headline_tone(item.title)
+    lines.append(f"Tone for crypto: {TONE_LABEL[tone]}")
     if topics:
         lines.append("Topics: " + " · ".join(topics))
     if item.summary:
@@ -321,6 +338,8 @@ async def article(db: Database, news_id: int, cat: str = "all", page: int = 0, q
     table = _reaction_table(marks)
     lines += ["", "📈 <b>Price after this news</b>"]
     lines.append(table or "<i>Recorded within 2 minutes of publication, then at +15m, +1h, +4h, +24h.</i>")
+    if line := outlook_line(outlook):
+        lines += ["", line]
     if others:
         lines += ["", f"🗞 <b>Also reported by {len(others)} other outlet{'s' if len(others) > 1 else ''}</b>"]
         lines += [f"• <a href=\"{h(o.url)}\">{h(o.source)}</a> · {ago(o.event_at)}" for o in others]
@@ -328,7 +347,13 @@ async def article(db: Database, news_id: int, cat: str = "all", page: int = 0, q
         if earliest.id != item.id:
             lines.append(f"<i>First reported by {h(earliest.source)}</i>")
 
-    kb = [[InlineKeyboardButton(text="🔗 Open article", url=item.url)], [back]]
+    kb = [
+        [
+            InlineKeyboardButton(text="🔗 Open article", url=item.url),
+            InlineKeyboardButton(text="🧠 Similar past events", callback_data=SimilarCB(id=item.id).pack()),
+        ],
+        [back],
+    ]
     return "\n".join(lines), InlineKeyboardMarkup(inline_keyboard=kb)
 
 
@@ -350,7 +375,7 @@ def _pre_table(rows: list[tuple[str, ...]]) -> str:
     widths = [max(len(r[i]) for r in rows) for i in range(len(rows[0]))]
     out = []
     for r in rows:
-        cells = [r[0].ljust(widths[0])] + [c.rjust(w) for c, w in zip(r[1:], widths[1:])]
+        cells = [r[0].ljust(widths[0])] + [c.rjust(w) for c, w in zip(r[1:], widths[1:], strict=False)]
         out.append("  ".join(cells))
     return "<pre>" + h("\n".join(out)) + "</pre>"
 
@@ -424,12 +449,7 @@ async def order_book(hub: ExchangeHub, coin: str, exchange: str) -> Screen:
         InlineKeyboardButton(text=_tab(ex_name(e), e == exchange), callback_data=MarketCB(view="book", coin=coin, ex=e).pack())
         for e in hub.names
     ]
-    kb = _rows(tabs, 4) + [
-        [
-            InlineKeyboardButton(text="◀️ Back", callback_data=MarketCB(coin=coin).pack()),
-            InlineKeyboardButton(text="🔄 Refresh", callback_data=MarketCB(view="book", coin=coin, ex=exchange).pack()),
-        ]
-    ]
+    kb = [*_rows(tabs, 4), [InlineKeyboardButton(text="◀️ Back", callback_data=MarketCB(coin=coin).pack()), InlineKeyboardButton(text="🔄 Refresh", callback_data=MarketCB(view="book", coin=coin, ex=exchange).pack())]]
     try:
         ob = await hub.order_book(exchange, coin, depth=6)
     except ExchangeError as exc:
@@ -534,12 +554,12 @@ async def history(db: Database, cat: str = "all", hz: int = 60, mode: str = "ev"
         InlineKeyboardButton(text=_tab(label, m == hz), callback_data=HistoryCB(cat=cat, hz=m).pack())
         for m, label in HORIZONS
     ]
-    kb = [_history_mode_tabs("ev", cat, hz)] + _rows(cat_tabs, 3) + [hz_tabs]
+    kb = [_history_mode_tabs("ev", cat, hz), *_rows(cat_tabs, 3), hz_tabs]
     return "\n".join(lines), InlineKeyboardMarkup(inline_keyboard=kb)
 
 
 async def history_patterns(db: Database, mode: str) -> Screen:
-    reactions = await db.all_reactions(days=30)
+    reactions = await db.all_reactions(days=120)
     baseline, groups = patterns(reactions, by="topic" if mode == "tp" else "category")
     if mode == "ct":
         labels = dict(NEWS_TABS)
@@ -547,7 +567,7 @@ async def history_patterns(db: Database, mode: str) -> Screen:
 
     lines = [
         "🧠 <b>Patterns: average BTC move after each kind of news</b>",
-        "<i>Last 30 days · news in the same 30 minutes counted once</i>",
+        "<i>Last 120 days (live + imported archive) · news in the same 30 minutes counted once</i>",
         "",
     ]
     if baseline is None:
@@ -569,7 +589,15 @@ async def history_patterns(db: Database, mode: str) -> Screen:
 # --- status ------------------------------------------------------------------
 
 
-async def status(db: Database, hub: ExchangeHub, collector: NewsCollector, full: bool = False) -> Screen:
+async def status(
+    db: Database,
+    hub: ExchangeHub,
+    collector: NewsCollector,
+    full: bool = False,
+    *,
+    jobs: list | None = None,
+    progress: tuple[int, int] | None = None,
+) -> Screen:
     ex_statuses, stats, marks = await asyncio.gather(hub.status(), db.news_stats(), db.count_price_marks())
     sources = collector.sources
     online = [s for s in sources if collector.status[s.name].ok]
@@ -602,6 +630,20 @@ async def status(db: Database, hub: ExchangeHub, collector: NewsCollector, full:
     lines += ["", "<b>Memory</b>", f"🗂 {total:,} news items · 📈 {marks:,} price points"]
     if total:
         lines.append(" · ".join(f"{CATEGORY_ICONS.get(c, '')} {n:,}" for c, n in sorted(stats.items(), key=lambda x: -x[1])))
+    if progress is not None:
+        done, total_req = progress
+        lines.append(
+            f"📚 Archive import (90 days of past news): {done}/{total_req}"
+            + (" ✅" if done >= total_req else " — running in the background")
+        )
+    if jobs:
+        bad = [j for j in jobs if not j.healthy]
+        lines += ["", "<b>Background jobs</b>"]
+        if bad:
+            lines += [f"❌ {h(j.name)}: {h((j.last_error or 'not running')[:80])}" for j in bad]
+            lines.append(f"✅ {len(jobs) - len(bad)} others healthy")
+        else:
+            lines.append(f"✅ all {len(jobs)} healthy")
     lines.append(updated_line())
 
     kb = [
@@ -624,7 +666,7 @@ ALERT_LEVELS = [
 ]
 
 
-def alert_message(item: NewsItem, btc: Ticker | None, pattern: Pattern | None) -> str:
+def alert_message(item: NewsItem, btc: Ticker | None, pattern: Pattern | None, outlook: Outlook | None = None) -> str:
     emoji, label = level(item.importance)
     topics = topics_of(item)
     head = f"{emoji} <b>{label.upper()} · {item.importance}/10</b>"
@@ -638,10 +680,15 @@ def alert_message(item: NewsItem, btc: Ticker | None, pattern: Pattern | None) -
     ]
     if item.importance_reasons:
         lines.append(f"<i>Why: {h(item.importance_reasons)}</i>")
+    tone = item.sentiment if item.sentiment is not None else headline_tone(item.title)
+    if tone:
+        lines.append(f"Tone: {TONE_LABEL[tone]}")
     lines.append("")
     if btc:
         lines.append(f"₿ BTC now <b>${fmt_price(btc.last)}</b> ({fmt_pct(btc.change_pct)} 24h)")
-    if pattern:
+    if line := outlook_line(outlook):
+        lines.append(line)
+    elif pattern:
         avg4 = pattern.avg[240]
         up = pattern.up_share.get(240, 0) * 100
         lines.append(
@@ -658,7 +705,12 @@ def alert_buttons(item: NewsItem) -> InlineKeyboardMarkup:
                 InlineKeyboardButton(text="📖 Details", callback_data=ItemCB(id=item.id, s="top", new=1).pack()),
                 InlineKeyboardButton(text="🔗 Open", url=item.url),
             ],
-            [InlineKeyboardButton(text="🔔 Alert settings", callback_data=AlertsCB().pack())],
+            [InlineKeyboardButton(text="🧠 Similar past events", callback_data=SimilarCB(id=item.id, new=1).pack())],
+            [
+                InlineKeyboardButton(text="🔕 1 h", callback_data=PauseCB(minutes=60, back="alert").pack()),
+                InlineKeyboardButton(text="🔕 Until morning", callback_data=PauseCB(minutes=-1, back="alert").pack()),
+                InlineKeyboardButton(text="⚙️", callback_data=AlertsCB().pack()),
+            ],
         ]
     )
 
@@ -701,6 +753,7 @@ async def alerts_settings(db: Database, user: User) -> Screen:
         for key in NEWS_TABS_KEYS
     ]
     kb = [[toggle], level_row, *_rows(cat_buttons, 3)]
+    kb.append([BACK_TO_SETTINGS])
     kb.append(
         [
             InlineKeyboardButton(text="🧪 Send test alert", callback_data=AlertsCB(action="test").pack()),

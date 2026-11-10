@@ -7,7 +7,7 @@ missing points are filled in when it starts again.
 from __future__ import annotations
 
 import logging
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 
 from collectors.exchanges import ExchangeError, ExchangeHub
 from storage.db import Database
@@ -20,7 +20,7 @@ CANDLES_PER_CALL = 1000
 
 def minute_ms(ts: datetime) -> int:
     """Start of the minute containing ts (naive UTC) in epoch milliseconds."""
-    ms = int(ts.replace(tzinfo=timezone.utc).timestamp() * 1000)
+    ms = int(ts.replace(tzinfo=UTC).timestamp() * 1000)
     return ms - ms % MINUTE_MS
 
 

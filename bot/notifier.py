@@ -4,13 +4,16 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from datetime import timedelta
+from bisect import bisect_left, bisect_right
+from datetime import datetime, timedelta
 
 from aiogram import Bot
 from aiogram.exceptions import TelegramAPIError, TelegramForbiddenError
 
 from analysis.importance import score
 from analysis.patterns import PatternCache, same_story
+from analysis.sentiment import headline_tone
+from analysis.similar import SimilarityEngine
 from bot import screens
 from collectors.exchanges import ExchangeHub, Ticker
 from storage.db import Database, NewsItem, User, utcnow
@@ -28,34 +31,53 @@ async def score_items(db: Database, items: list[NewsItem]) -> None:
         return
     start = min(i.event_at for i in items) - CONFIRM_WINDOW
     end = max(i.event_at for i in items) + timedelta(minutes=10)
-    nearby = await db.news_between(start, end)
+    nearby = sorted(await db.news_between(start, end), key=lambda n: n.event_at)
+    times = [n.event_at for n in nearby]
     results = {}
     for item in items:
-        window = [n for n in nearby if abs((n.event_at - item.event_at).total_seconds()) <= CONFIRM_WINDOW.total_seconds()]
-        s = score(item, window)
+        lo = bisect_left(times, item.event_at - CONFIRM_WINDOW)
+        hi = bisect_right(times, item.event_at + CONFIRM_WINDOW)
+        s = score(item, nearby[lo:hi])
         item.importance, item.importance_reasons = s.value, " · ".join(s.reasons)
-        results[item.id] = (s.value, item.importance_reasons)
+        item.sentiment = headline_tone(item.title)
+        results[item.id] = (s.value, item.importance_reasons, item.sentiment)
     await db.set_importance(results)
 
 
-def wants(user: User, item: NewsItem) -> bool:
+def wants(user: User, item: NewsItem, now: datetime | None = None) -> bool:
+    now = now or utcnow()
+    if user.is_muted(now):
+        return False
+    if user.is_quiet(now) and not (user.quiet_critical and (item.importance or 0) >= 9):
+        return False  # quiet hours: only 🔴 critical news (if the user allows it)
     if (item.importance or 0) < user.alert_level:
         return False
     return not user.categories or item.category in user.categories
 
 
 class Notifier:
-    def __init__(self, bot: Bot, db: Database, hub: ExchangeHub, patterns: PatternCache):
-        self.bot, self.db, self.hub, self.patterns = bot, db, hub, patterns
+    def __init__(
+        self,
+        bot: Bot,
+        db: Database,
+        hub: ExchangeHub,
+        patterns: PatternCache,
+        similar: SimilarityEngine | None = None,
+    ):
+        self.bot, self.db, self.hub, self.patterns, self.similar = bot, db, hub, patterns, similar
 
     async def alert_text(self, item: NewsItem) -> str:
-        btc, pattern = await asyncio.gather(
-            self.hub.ticker(self.hub.names[0], "BTC"), self.patterns.for_item(item), return_exceptions=True
+        btc, pattern, outlook = await asyncio.gather(
+            self.hub.ticker(self.hub.names[0], "BTC"),
+            self.patterns.for_item(item),
+            self.similar.for_item(item, limit=30) if self.similar else asyncio.sleep(0, result=None),
+            return_exceptions=True,
         )
         return screens.alert_message(
             item,
             btc if isinstance(btc, Ticker) else None,
             pattern if not isinstance(pattern, BaseException) else None,
+            outlook if not isinstance(outlook, BaseException) else None,
         )
 
     async def send(self, user: User, item: NewsItem, *, test: bool = False) -> bool:
@@ -84,7 +106,8 @@ class Notifier:
             return 0
         sent = 0
         for user in await self.db.alert_subscribers():
-            matching = [i for i in candidates if wants(user, i)]
+            now = utcnow()
+            matching = [i for i in candidates if wants(user, i, now)]
             if not matching:
                 continue
             already = await self.db.recent_alerts(user.id)

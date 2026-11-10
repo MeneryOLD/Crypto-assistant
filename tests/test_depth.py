@@ -35,8 +35,8 @@ def item(id: int, title: str, source: str = "BBC", minutes_ago: int = 0, categor
 def test_sources_are_unique_and_varied():
     names = [s.name for s in SOURCES]
     assert len(names) == len(set(names))
-    assert len(SOURCES) >= 80
-    assert {s.kind for s in SOURCES} == {"rss", "google", "telegram"}
+    assert len(SOURCES) >= 110
+    assert {s.kind for s in SOURCES} == {"rss", "google", "telegram", "reddit"}
 
 
 def test_parse_telegram():
@@ -57,9 +57,10 @@ def test_parse_google_news_uses_publisher():
 
 def test_collector_only_polls_due_sources():
     c = NewsCollector()
-    assert len(c.due()) == len(SOURCES)
+    reddit = [s for s in SOURCES if s.kind == "reddit"]
+    assert len(c.due()) == len(SOURCES) - len(reddit)  # Reddit feeds start staggered
     c.status[SOURCES[0].name].next_due = 1e18
-    assert len(c.due()) == len(SOURCES) - 1
+    assert len(c.due()) == len(SOURCES) - len(reddit) - 1
 
 
 def test_fear_greed_parse():

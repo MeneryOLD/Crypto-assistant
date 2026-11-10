@@ -159,7 +159,7 @@ class ExchangeHub:
         """Ticker from every connected exchange. Returns (tickers, {exchange: error})."""
         results = await asyncio.gather(*(self.ticker(n, coin) for n in self.names), return_exceptions=True)
         tickers, errors = [], {}
-        for name, r in zip(self.names, results):
+        for name, r in zip(self.names, results, strict=False):
             if isinstance(r, Ticker):
                 tickers.append(r)
             else:
@@ -187,6 +187,17 @@ class ExchangeHub:
             return await asyncio.wait_for(client.fetch_ohlcv(symbol, "1m", since=since_ms, limit=limit), REQUEST_TIMEOUT)
         except Exception as exc:
             raise ExchangeError(f"{name}: {_short(exc)}") from exc
+
+    async def change_7d(self, name: str, coin: str) -> float | None:
+        """Percent change over the last 7 days (daily candles)."""
+        client, symbol = await self._symbol(name, coin)
+        try:
+            candles = await asyncio.wait_for(client.fetch_ohlcv(symbol, "1d", limit=8), REQUEST_TIMEOUT)
+        except Exception:
+            return None
+        if len(candles) < 8 or not candles[0][4]:
+            return None
+        return (float(candles[-1][4]) - float(candles[0][4])) / float(candles[0][4]) * 100
 
     async def funding_rates(self, coin: str) -> dict[str, float]:
         """Perpetual-futures funding rate per exchange (positive = longs pay shorts = crowded longs)."""

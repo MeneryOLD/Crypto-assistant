@@ -1,0 +1,38 @@
+[project]
+name = "vexora-crypto-intel"
+version = "1.0.0"
+description = "Telegram bot: worldwide crypto, politics and economy news radar with importance scoring, alerts, market sentiment and price memory"
+readme = "README.md"
+requires-python = ">=3.12"
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+asyncio_default_fixture_loop_scope = "function"
+testpaths = ["tests"]
+
+[tool.ruff]
+line-length = 130
+target-version = "py312"
+extend-exclude = [".venv", "data"]
+
+[tool.ruff.lint]
+select = [
+    "E", "F", "W",  # pycodestyle + pyflakes
+    "I",            # import order
+    "B",            # bugbear: likely bugs
+    "UP",           # modern syntax
+    "SIM",          # simplifications
+    "ASYNC",        # async pitfalls
+    "RUF",          # ruff-specific
+]
+ignore = [
+    "E501",    # long lines: formatted strings for Telegram messages read better unwrapped
+    "RUF001",  # ambiguous unicode characters: we use typographic symbols on purpose (−, ×, …)
+    "RUF002",
+    "RUF003",
+    "SIM108",  # ternaries are not always clearer
+    "B008",
+]
+
+[tool.ruff.lint.per-file-ignores]
+"tests/*" = ["B011", "SIM117"]

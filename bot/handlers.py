@@ -8,13 +8,15 @@ import re
 from aiogram import F, Router
 from aiogram.enums import ChatAction
 from aiogram.exceptions import TelegramBadRequest
-from aiogram.filters import Command, CommandObject, CommandStart
+from aiogram.filters import Command, CommandObject
 from aiogram.types import CallbackQuery, InlineKeyboardMarkup, Message
 
 from bot import screens
+from bot.context import App
 from bot.notifier import Notifier
 from bot.screens import (
     BTN_ALERTS,
+    BTN_HELP,
     BTN_HISTORY,
     BTN_MARKETS,
     BTN_NEWS,
@@ -34,7 +36,8 @@ from collectors.news import CATEGORIES, NewsCollector
 from storage.db import Database
 
 log = logging.getLogger(__name__)
-router = Router()
+router = Router(name="main")
+fallback_router = Router(name="fallback")  # included last: free text never shadows a button
 
 COIN_RE = re.compile(r"^[A-Za-z0-9]{2,10}$")
 
@@ -71,20 +74,11 @@ async def _edit(query: CallbackQuery, text: str, kb: InlineKeyboardMarkup | None
 # --- start / help ------------------------------------------------------------
 
 
-@router.message(CommandStart())
-async def cmd_start(
-    message: Message, db: Database, hub: ExchangeHub, collector: NewsCollector, fg: FearGreedClient
-) -> None:
-    tg = message.from_user
-    user = None
-    if tg:
-        user, created = await db.upsert_user(tg.id, tg.username, tg.first_name)
-    await _typing(message)
-    text = await screens.home(db, hub, collector, fg, tg.first_name if tg else None, user)
-    await message.answer(text, reply_markup=MAIN_MENU)
+# /start, Home, Settings and the first-run setup live in bot/handlers_settings.py
 
 
 @router.message(Command("help"))
+@router.message(F.text == BTN_HELP)
 async def cmd_help(message: Message) -> None:
     await message.answer(screens.HELP, reply_markup=MAIN_MENU)
 
@@ -117,9 +111,9 @@ async def cmd_top(message: Message, db: Database) -> None:
 
 
 @router.callback_query(ItemCB.filter())
-async def cb_item(query: CallbackQuery, callback_data: ItemCB, db: Database) -> None:
+async def cb_item(query: CallbackQuery, callback_data: ItemCB, db: Database, app: App) -> None:
     c = callback_data
-    text, kb = await screens.article(db, c.id, c.cat, c.page, c.q, c.s)
+    text, kb = await screens.article(db, c.id, c.cat, c.page, c.q, c.s, similar=app.similar)
     if c.new and isinstance(query.message, Message):
         # Opened from an alert: keep the alert, show details as a new message.
         await query.message.answer(text, reply_markup=kb)
@@ -238,27 +232,73 @@ async def cb_history(query: CallbackQuery, callback_data: HistoryCB, db: Databas
 
 @router.message(Command("status", "sources", "exchanges"))
 @router.message(F.text == BTN_STATUS)
-async def cmd_status(message: Message, db: Database, hub: ExchangeHub, collector: NewsCollector) -> None:
+async def cmd_status(message: Message, db: Database, hub: ExchangeHub, collector: NewsCollector, app: App) -> None:
     await _typing(message)
-    text, kb = await screens.status(db, hub, collector)
+    text, kb = await screens.status(db, hub, collector, jobs=_jobs(app), progress=await _progress(app))
     await message.answer(text, reply_markup=kb)
 
 
 @router.callback_query(StatusCB.filter())
 async def cb_status(
-    query: CallbackQuery, callback_data: StatusCB, db: Database, hub: ExchangeHub, collector: NewsCollector
+    query: CallbackQuery, callback_data: StatusCB, db: Database, hub: ExchangeHub, collector: NewsCollector, app: App
 ) -> None:
     await _ack(query, "Checking…")
-    await _edit(query, *await screens.status(db, hub, collector, callback_data.full), acked=True)
+    screen = await screens.status(db, hub, collector, callback_data.full, jobs=_jobs(app), progress=await _progress(app))
+    await _edit(query, *screen, acked=True)
+
+
+def _jobs(app: App) -> list:
+    return list(app.scheduler.jobs.values()) if app.scheduler else []
+
+
+async def _progress(app: App) -> tuple[int, int] | None:
+    if not app.settings.history_import:
+        return None
+    from bot.insights import history_progress  # local import: insights imports this module
+
+    return await history_progress(app)
 
 
 # --- free text: a coin or a news search ------------------------------------------
 
 
-@router.message(F.text & ~F.text.startswith("/"))
-async def free_text(message: Message, db: Database, hub: ExchangeHub, fg: FearGreedClient) -> None:
+SHORTCUTS = {
+    "home": {"home", "menu", "start", "главная", "меню", "домой"},
+    "top": {"top", "important", "главное", "топ", "важное"},
+    "sentiment": {"sentiment", "mood", "fear", "greed", "настроение", "сентимент", "страх"},
+    "calendar": {"calendar", "events", "календарь", "события"},
+    "settings": {"settings", "setup", "alerts", "notifications", "настройки", "уведомления", "оповещения"},
+    "help": {"help", "?", "помощь", "справка"},
+}
+
+
+def shortcut(text: str) -> str | None:
+    word = text.strip().lower().strip("!?.")
+    return next((name for name, words in SHORTCUTS.items() if word in words), None)
+
+
+@fallback_router.message(F.text & ~F.text.startswith("/"))
+async def free_text(message: Message, db: Database, hub: ExchangeHub, fg: FearGreedClient, app: App) -> None:
     text = (message.text or "").strip()
     await _typing(message)
+    if (name := shortcut(text)) is not None:
+        from bot import insights, settings_ui  # local: these modules build on this one
+
+        user = await _user(db, message.from_user) if message.from_user else None
+        if name == "home":
+            screen = await settings_ui.home(app, user)  # type: ignore[arg-type]
+        elif name == "top":
+            screen = await screens.news(db, s="top")
+        elif name == "sentiment":
+            screen = await insights.sentiment(app)
+        elif name == "calendar" and user is not None:
+            screen = await insights.calendar(app, user)  # type: ignore[arg-type]
+        elif name == "settings" and user is not None:
+            screen = settings_ui.settings_screen(user)  # type: ignore[arg-type]
+        else:
+            screen = (screens.HELP, None)
+        await message.answer(screen[0], reply_markup=screen[1])
+        return
     if COIN_RE.match(text) and await hub.is_listed(text):
         screen = await screens.market(hub, text, fg)
     else:

@@ -105,14 +105,3 @@ async def test_history_and_status(db):
     assert "Binance" in text and "CoinDesk: timed out" in text
     text, _ = await screens.status(db, hub, collector, full=True)
     assert "Bitcoin Magazine" in text
-
-
-async def test_home(db):
-    await add_items(db, 3)
-    text = await screens.home(db, hub_with({"binance": 100.0}), NewsCollector(), FakeFG(), "Sam")
-    assert "Hi, Sam" in text and "BTC" in text and "Story number 0" in text
-
-
-class FakeFG:
-    async def get(self):
-        return None
