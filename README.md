@@ -17,6 +17,33 @@ whale transfers, Google News and Reddit — and turns them into signals for cryp
 
 > Signals, not financial advice. Past reactions don't guarantee future ones.
 
+## Screenshots
+
+<table>
+  <tr>
+    <td width="50%"><img src="docs/screenshots/01-home.png" alt="Home dashboard"><br><b>🏠 Home</b> — prices, market mood, next big release, top stories</td>
+    <td width="50%"><img src="docs/screenshots/02-alert.png" alt="Instant alert"><br><b>🔔 Instant alert</b> — score, why it matters, tone, what history says, pause buttons</td>
+  </tr>
+  <tr>
+    <td><img src="docs/screenshots/03-top.png" alt="Top stories"><br><b>🔥 Top</b> — the most important stories of the last 24 h, duplicates merged</td>
+    <td><img src="docs/screenshots/04-story.png" alt="Story details"><br><b>📖 Story</b> — summary, BTC/ETH price after the news, similar past events</td>
+  </tr>
+  <tr>
+    <td><img src="docs/screenshots/05-sentiment.png" alt="Market sentiment"><br><b>📊 Sentiment</b> — market mood 0–100, Fear &amp; Greed trend, news tone, futures positioning</td>
+    <td><img src="docs/screenshots/06-similar.png" alt="Similar past events"><br><b>🧠 Similar past events</b> — what BTC did after news like this</td>
+  </tr>
+  <tr>
+    <td><img src="docs/screenshots/07-markets.png" alt="Markets"><br><b>💹 Markets</b> — a coin on 4 exchanges, funding rates</td>
+    <td><img src="docs/screenshots/08-calendar.png" alt="Economic calendar"><br><b>📅 Calendar</b> — releases in your time zone, reminders</td>
+  </tr>
+  <tr>
+    <td><img src="docs/screenshots/09-settings.png" alt="Settings"><br><b>⚙️ Settings</b> — alerts, quiet hours, pause, morning brief</td>
+    <td><img src="docs/screenshots/10-setup.png" alt="First-run setup"><br><b>🧭 Setup</b> — tap the time on your clock to set the time zone</td>
+  </tr>
+</table>
+
+<sub>Rendered from the bot's real output with live data (11 Nov 2026) by <code>python -m tools.render_screens</code>.</sub>
+
 ## Screens
 
 New users get a 3-step setup on `/start`: tap the time on their clock (sets the time zone), choose how many
@@ -132,7 +159,8 @@ analysis/
 storage/
   db.py                 SQLite (WAL) models, automatic column migrations, queries
 tests/                  112 tests, no network needed
-docs/ARCHITECTURE.md    data flow, jobs, design decisions
+docs/                   ARCHITECTURE.md, DEPLOY.md (free 24/7 hosting), screenshots/
+tools/render_screens.py regenerates the README screenshots from live bot output
 ```
 
 ## Operations
