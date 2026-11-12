@@ -57,6 +57,26 @@ def parse(data: dict) -> FearGreed | None:
     )
 
 
+async def fetch_history(days: int = 200) -> dict[str, int]:
+    """{'YYYY-MM-DD': value} for the last `days` days (for training the forecast). Empty on failure."""
+    try:
+        async with httpx.AsyncClient(timeout=15) as client:
+            resp = await client.get(f"https://api.alternative.me/fng/?limit={days}")
+            resp.raise_for_status()
+            rows = resp.json().get("data") or []
+    except (httpx.HTTPError, ValueError) as exc:
+        log.warning("Fear & Greed history unavailable: %s", exc)
+        return {}
+    out = {}
+    for r in rows:
+        try:
+            day = time.strftime("%Y-%m-%d", time.gmtime(int(r["timestamp"])))
+            out[day] = int(r["value"])
+        except (KeyError, ValueError):
+            continue
+    return out
+
+
 class FearGreedClient:
     def __init__(self) -> None:
         self._cached: tuple[float, FearGreed | None] = (0.0, None)

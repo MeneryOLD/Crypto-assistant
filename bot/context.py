@@ -6,6 +6,7 @@ import asyncio
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING
 
+from analysis.forecast import ForecastEngine
 from analysis.patterns import PatternCache
 from analysis.sentiment import Mood, NewsSentiment, market_mood, news_sentiment
 from analysis.similar import SimilarityEngine
@@ -32,6 +33,7 @@ class App:
     similar: SimilarityEngine
     patterns: PatternCache
     scheduler: Scheduler | None = None
+    forecast: ForecastEngine | None = None
     notifier: Notifier | None = None
 
     def is_admin(self, telegram_id: int) -> bool:

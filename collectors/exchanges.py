@@ -180,13 +180,37 @@ class ExchangeHub:
             asks=[(float(p), float(a)) for p, a, *_ in ob["asks"][:depth]],
         )
 
-    async def candles(self, name: str, coin: str, since_ms: int, limit: int = 1000) -> list[list[float]]:
-        """1-minute candles [timestamp_ms, open, high, low, close, volume] starting at since_ms."""
+    async def candles(
+        self, name: str, coin: str, since_ms: int, limit: int = 1000, timeframe: str = "1m"
+    ) -> list[list[float]]:
+        """Candles [timestamp_ms, open, high, low, close, volume] starting at since_ms (1-minute by default)."""
         client, symbol = await self._symbol(name, coin)
         try:
-            return await asyncio.wait_for(client.fetch_ohlcv(symbol, "1m", since=since_ms, limit=limit), REQUEST_TIMEOUT)
+            return await asyncio.wait_for(client.fetch_ohlcv(symbol, timeframe, since=since_ms, limit=limit), REQUEST_TIMEOUT)
         except Exception as exc:
             raise ExchangeError(f"{name}: {_short(exc)}") from exc
+
+    async def funding_history(self, name: str, coin: str, since_ms: int) -> list[tuple[int, float]]:
+        """[(timestamp_ms, rate)] of the perpetual's funding rate since since_ms (every 8 h on most exchanges)."""
+        client = await self._client(name)
+        symbol = f"{coin.upper()}/USDT:USDT"
+        if symbol not in client.markets:
+            return []
+        out: list[tuple[int, float]] = []
+        cursor = since_ms
+        try:
+            for _ in range(5):  # 1000 records per call ≈ 333 days of 8-hour fundings
+                rows = await asyncio.wait_for(client.fetch_funding_rate_history(symbol, since=cursor, limit=1000), REQUEST_TIMEOUT)
+                rows = [(int(r["timestamp"]), float(r["fundingRate"])) for r in rows if r.get("fundingRate") is not None]
+                if not rows:
+                    break
+                out.extend(rows)
+                if len(rows) < 1000:
+                    break
+                cursor = rows[-1][0] + 1
+        except Exception as exc:
+            raise ExchangeError(f"{name}: {_short(exc)}") from exc
+        return out
 
     async def change_7d(self, name: str, coin: str) -> float | None:
         """Percent change over the last 7 days (daily candles)."""

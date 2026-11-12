@@ -28,13 +28,14 @@ BTN_NEWS, BTN_TOP, BTN_MARKETS = "📰 News", "🔥 Top", "💹 Markets"
 BTN_HISTORY, BTN_ALERTS, BTN_STATUS = "🧠 History", "🔔 Alerts", "📡 Status"
 BTN_SENTIMENT, BTN_CALENDAR, BTN_DIGEST = "📊 Sentiment", "📅 Calendar", "☀️ Digest"
 BTN_HOME, BTN_SETTINGS, BTN_HELP = "🏠 Home", "⚙️ Settings", "❓ Help"
+BTN_FORECAST = "🔮 Forecast"
 
 # Alerts, Digest and Status now live inside ⚙️ Settings; their old buttons still work for older keyboards.
 MAIN_MENU = ReplyKeyboardMarkup(
     keyboard=[
         [KeyboardButton(text=BTN_HOME), KeyboardButton(text=BTN_TOP), KeyboardButton(text=BTN_NEWS)],
         [KeyboardButton(text=BTN_SENTIMENT), KeyboardButton(text=BTN_MARKETS), KeyboardButton(text=BTN_CALENDAR)],
-        [KeyboardButton(text=BTN_HISTORY), KeyboardButton(text=BTN_SETTINGS), KeyboardButton(text=BTN_HELP)],
+        [KeyboardButton(text=BTN_FORECAST), KeyboardButton(text=BTN_HISTORY), KeyboardButton(text=BTN_SETTINGS)],
     ],
     resize_keyboard=True,
     is_persistent=True,
@@ -151,6 +152,7 @@ HELP = "\n".join(
         f'{BTN_SENTIMENT} — market mood 0–100: Fear &amp; Greed, news tone, futures positioning, liquidity',
         f'{BTN_MARKETS} — prices, funding rates and order books on Binance, Bybit, OKX, Kraken',
         f'{BTN_CALENDAR} — CPI, jobs, Fed and other releases that move markets, in your time zone',
+        f'{BTN_FORECAST} — BTC up or down in 4 h / 24 h: probability from all signals, tested accuracy, live record',
         f'{BTN_HISTORY} — how BTC moved after news; patterns by topic',
         f'{BTN_SETTINGS} — alerts, quiet hours, morning brief, time zone, pause, system status',
         '',
@@ -438,7 +440,12 @@ async def market(hub: ExchangeHub, coin: str = "BTC", fg: FearGreedClient | None
             InlineKeyboardButton(text="⚖️ Buy/sell gap", callback_data=MarketCB(view="arb", coin=coin).pack()),
         ]
     )
-    kb.append([InlineKeyboardButton(text="🔄 Refresh", callback_data=MarketCB(coin=coin).pack())])
+    kb.append(
+        [
+            InlineKeyboardButton(text="📐 Technicals", callback_data=f"ta:{coin}"),  # bot.forecast_ui.TechCB
+            InlineKeyboardButton(text="🔄 Refresh", callback_data=MarketCB(coin=coin).pack()),
+        ]
+    )
     return "\n".join(lines), InlineKeyboardMarkup(inline_keyboard=kb)
 
 

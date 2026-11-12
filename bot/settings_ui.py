@@ -9,8 +9,9 @@ from aiogram.filters.callback_data import CallbackData
 from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup
 
 from bot.context import App
+from bot.forecast_ui import ForecastCB, forecast_line
 from bot.formatting import CATEGORY_ICONS, ago, fmt_pct, fmt_price, h
-from bot.insights import CalendarCB, DigestCB, SentimentCB
+from bot.insights import DigestCB, SentimentCB
 from bot.screens import (
     ALERT_LEVELS,
     NEWS_TABS,
@@ -251,6 +252,8 @@ async def home(app: App, user: User | None, first_name: str | None = None) -> Sc
         mood_bits.append(f"{fg.emoji} Fear &amp; Greed <b>{fg.value}</b> {h(fg.label)}")
     if mood_bits:
         lines.append(" · ".join(mood_bits))
+    if app.forecast and (fline := forecast_line(app.forecast.latest)):
+        lines.append(fline)
     if user:
         lines.append(alerts_summary(user))
 
@@ -269,7 +272,7 @@ async def home(app: App, user: User | None, first_name: str | None = None) -> Sc
     kb = [
         [InlineKeyboardButton(text="🔥 Top", callback_data=NewsCB(s="top").pack()),
          InlineKeyboardButton(text="📊 Sentiment", callback_data=SentimentCB().pack()),
-         InlineKeyboardButton(text="📅 Calendar", callback_data=CalendarCB().pack())],
+         InlineKeyboardButton(text="🔮 Forecast", callback_data=ForecastCB().pack())],
         [InlineKeyboardButton(text="💹 BTC markets", callback_data=MarketCB(coin="BTC").pack()),
          InlineKeyboardButton(text="⚙️ Settings", callback_data=SettingsCB().pack()),
          InlineKeyboardButton(text="🔄 Refresh", callback_data=HomeCB().pack())],

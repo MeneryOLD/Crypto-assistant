@@ -183,6 +183,21 @@ class SentimentSnapshot(Base):
     stablecoins: Mapped[float | None] = mapped_column(Float)
 
 
+class ForecastRow(Base):
+    """Every hourly BTC forecast, scored once its horizon has passed (the live track record)."""
+
+    __tablename__ = "forecasts"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    made_at: Mapped[datetime] = mapped_column(DateTime, index=True)
+    horizon: Mapped[int] = mapped_column(Integer)  # hours
+    prob_up: Mapped[float] = mapped_column(Float)
+    price: Mapped[float] = mapped_column(Float)
+    reliable: Mapped[bool] = mapped_column(Boolean, default=False)  # did the model pass its own test?
+    outcome_price: Mapped[float | None] = mapped_column(Float)
+    correct: Mapped[bool | None] = mapped_column(Boolean)
+
+
 class KeyValue(Base):
     """Small persistent state (e.g. history-import progress)."""
 
@@ -741,3 +756,46 @@ class Database:
             files = list(db_file.parent.glob(db_file.name + "*"))  # .db plus -wal / -shm
             out["db_mb"] = round(sum(f.stat().st_size for f in files) / 1e6, 1)
         return out
+
+    # --- forecast track record ---------------------------------------------------------
+
+    async def add_forecast(self, made_at: datetime, horizon: int, prob_up: float, price: float, reliable: bool) -> None:
+        async with self.session() as s:
+            s.add(ForecastRow(made_at=made_at, horizon=horizon, prob_up=prob_up, price=price, reliable=reliable))
+            await s.commit()
+
+    async def due_forecasts(self) -> list[ForecastRow]:
+        """Forecasts whose horizon has passed but that are not scored yet."""
+        now = utcnow()
+        async with self.session() as s:
+            rows = (await s.scalars(select(ForecastRow).where(ForecastRow.outcome_price.is_(None)))).all()
+        return [r for r in rows if r.made_at + timedelta(hours=r.horizon, minutes=2) <= now]
+
+    async def resolve_forecast(self, forecast_id: int, outcome_price: float) -> None:
+        async with self.session() as s:
+            row = await s.get(ForecastRow, forecast_id)
+            if row is None:
+                return
+            row.outcome_price = outcome_price
+            if row.prob_up != 0.5:
+                row.correct = (outcome_price > row.price) == (row.prob_up > 0.5)
+            await s.commit()
+
+    async def forecast_record(self, horizon: int, days: int = 30) -> tuple[int, int, int, int]:
+        """(scored, correct, scored with a clear lean ≥ 55 % / ≤ 45 %, correct among those)."""
+        async with self.session() as s:
+            rows = (
+                await s.scalars(
+                    select(ForecastRow).where(
+                        ForecastRow.horizon == horizon,
+                        ForecastRow.correct.is_not(None),
+                        ForecastRow.made_at >= utcnow() - timedelta(days=days),
+                    )
+                )
+            ).all()
+        clear = [r for r in rows if abs(r.prob_up - 0.5) >= 0.05]
+        return len(rows), sum(1 for r in rows if r.correct), len(clear), sum(1 for r in clear if r.correct)
+
+    async def first_forecast_at(self) -> datetime | None:
+        async with self.session() as s:
+            return await s.scalar(select(func.min(ForecastRow.made_at)))

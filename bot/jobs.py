@@ -11,7 +11,7 @@ import httpx
 from aiogram import Bot
 from aiogram.exceptions import TelegramAPIError, TelegramForbiddenError
 
-from analysis.reactions import fill_price_marks
+from analysis.reactions import fill_price_marks, minute_ms, prices_at
 from bot import insights
 from bot.context import App, market_view
 from bot.notifier import Notifier, score_items
@@ -241,3 +241,28 @@ class RetentionJob:
         removed = await self.db.delete_older_than(self.days)
         if removed:
             log.info("retention: removed %d news items older than %d days", removed, self.days)
+
+
+class ForecastJob:
+    """Every hour: retrain, forecast BTC 4 h / 24 h, save it, and score earlier forecasts whose time has come."""
+
+    def __init__(self, app: App):
+        self.app = app
+
+    async def __call__(self) -> None:
+        engine = self.app.forecast
+        if engine is None:
+            return
+        fc = await engine.run(force=True)
+        if fc is not None:
+            for hz, o in fc.outlooks.items():
+                await self.app.db.add_forecast(fc.made_at, hz, o.prob_up, fc.price, o.model.reliable)
+        due = await self.app.db.due_forecasts()
+        if due:
+            prices = await prices_at(
+                self.app.hub, self.app.settings.price_history_exchange, "BTC",
+                [r.made_at + timedelta(hours=r.horizon) for r in due],
+            )
+            for r in due:
+                if (p := prices.get(minute_ms(r.made_at + timedelta(hours=r.horizon)))) is not None:
+                    await self.app.db.resolve_forecast(r.id, p)

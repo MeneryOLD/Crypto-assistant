@@ -269,6 +269,8 @@ SHORTCUTS = {
     "calendar": {"calendar", "events", "календарь", "события"},
     "settings": {"settings", "setup", "alerts", "notifications", "настройки", "уведомления", "оповещения"},
     "help": {"help", "?", "помощь", "справка"},
+    "technicals": {"ta", "technicals", "indicators", "индикаторы", "теханализ", "технический анализ"},
+    "forecast": {"forecast", "predict", "prediction", "прогноз", "предсказание"},
 }
 
 
@@ -295,6 +297,10 @@ async def free_text(message: Message, db: Database, hub: ExchangeHub, fg: FearGr
             screen = await insights.calendar(app, user)  # type: ignore[arg-type]
         elif name == "settings" and user is not None:
             screen = settings_ui.settings_screen(user)  # type: ignore[arg-type]
+        elif name in ("technicals", "forecast"):
+            from bot.forecast_ui import forecast_screen, technicals_screen
+
+            screen = await (technicals_screen(app) if name == "technicals" else forecast_screen(app))
         else:
             screen = (screens.HELP, None)
         await message.answer(screen[0], reply_markup=screen[1])

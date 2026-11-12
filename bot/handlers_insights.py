@@ -10,10 +10,11 @@ from aiogram.types import CallbackQuery, Message
 
 from bot import insights
 from bot.context import App
+from bot.forecast_ui import ForecastCB, TechCB, forecast_screen, technicals_screen
 from bot.handlers import _ack, _edit, _typing, _user
 from bot.insights import AdminCB, CalendarCB, DigestCB, SentimentCB
 from bot.jobs import DigestJob
-from bot.screens import BTN_CALENDAR, BTN_DIGEST, BTN_SENTIMENT, SimilarCB
+from bot.screens import BTN_CALENDAR, BTN_DIGEST, BTN_FORECAST, BTN_SENTIMENT, SimilarCB
 
 log = logging.getLogger(__name__)
 router = Router(name="insights")
@@ -141,3 +142,41 @@ async def cb_admin(query: CallbackQuery, app: App) -> None:
         await _ack(query, "Admins only", show_alert=True)
         return
     await _edit(query, *await insights.admin(app))
+
+
+# --- forecast --------------------------------------------------------------------------------
+
+
+@router.message(Command("forecast", "predict"))
+@router.message(F.text == BTN_FORECAST)
+async def cmd_forecast(message: Message, app: App) -> None:
+    await _typing(message)
+    text, kb = await forecast_screen(app)
+    await message.answer(text, reply_markup=kb)
+
+
+@router.callback_query(ForecastCB.filter())
+async def cb_forecast(query: CallbackQuery, callback_data: ForecastCB, app: App) -> None:
+    await _ack(query, "Updating the forecast…" if callback_data.refresh else None)
+    if callback_data.refresh and app.forecast:
+        await app.forecast.run()  # cached for 15 minutes
+    text, kb = await forecast_screen(app)
+    await _edit(query, text, kb, acked=True)
+
+
+@router.message(Command("ta", "technicals", "indicators"))
+async def cmd_technicals(message: Message, command: CommandObject, app: App) -> None:
+    coin = ((command.args or "").split() or ["BTC"])[0]
+    await _typing(message)
+    text, kb = await technicals_screen(app, coin)
+    await message.answer(text, reply_markup=kb)
+
+
+@router.callback_query(TechCB.filter())
+async def cb_technicals(query: CallbackQuery, callback_data: TechCB, app: App) -> None:
+    await _ack(query, "Calculating indicators…")
+    text, kb = await technicals_screen(app, callback_data.coin)
+    if isinstance(query.message, Message) and query.message.text and "technical analysis" not in query.message.text:
+        await query.message.answer(text, reply_markup=kb)  # opened from Markets / Forecast: keep that screen
+    else:
+        await _edit(query, text, kb, acked=True)

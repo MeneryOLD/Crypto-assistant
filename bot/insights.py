@@ -315,6 +315,10 @@ async def digest_messages(app: App, user: User) -> list[tuple[str, InlineKeyboar
         lines.append(f"💵 Stablecoins ${fmt_big(view.liquidity.supply)} ({_pct_short(view.liquidity.change_7d)} 7d)")
     if view.news:
         lines.append(f"📰 News tone 24 h: <b>{view.news.index:.0f}/100</b> (🟢 {view.news.bullish} · 🔴 {view.news.bearish})")
+    from bot.forecast_ui import forecast_line  # local: forecast_ui builds on this module
+
+    if app.forecast and (fline := forecast_line(app.forecast.latest)):
+        lines.append(fline)
 
     day_start_local = local.replace(hour=0, minute=0, second=0, microsecond=0)
     offset = timedelta(minutes=user.tz_offset or 0)
