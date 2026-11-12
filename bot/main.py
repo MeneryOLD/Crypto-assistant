@@ -6,6 +6,7 @@ import asyncio
 import contextlib
 import logging
 from logging.handlers import RotatingFileHandler
+from pathlib import Path
 
 from aiogram import Bot, Dispatcher
 from aiogram.client.default import DefaultBotProperties
@@ -19,6 +20,7 @@ from bot.context import App
 from bot.handlers import fallback_router
 from bot.handlers import router as main_router
 from bot.handlers_insights import router as insights_router
+from bot.handlers_portfolio import router as portfolio_router
 from bot.handlers_settings import router as settings_router
 from bot.jobs import (
     CalendarJob,
@@ -34,12 +36,15 @@ from bot.jobs import (
 )
 from bot.notifier import Notifier
 from bot.scheduler import Scheduler
+from collectors.accounts import AccountReader
 from collectors.exchanges import ExchangeHub
 from collectors.fear_greed import FearGreedClient
+from collectors.macro import MacroClient
 from collectors.market_data import MarketDataClient
 from collectors.news import SOURCES, NewsCollector, premium_sources
 from config import Settings, get_settings
 from storage.db import Database
+from storage.vault import Vault
 
 log = logging.getLogger("bot")
 
@@ -50,8 +55,9 @@ COMMANDS = [
     BotCommand(command="sentiment", description="📊 Market mood & positioning"),
     BotCommand(command="calendar", description="📅 Economic calendar"),
     BotCommand(command="markets", description="💹 Coin prices on exchanges"),
-    BotCommand(command="forecast", description="🔮 BTC 4h / 24h forecast"),
+    BotCommand(command="forecast", description="🔮 BTC / ETH / SOL 4h & 24h forecast"),
     BotCommand(command="ta", description="📐 Technical analysis: MAs, RSI, MACD…"),
+    BotCommand(command="portfolio", description="💼 Your exchange balances (read-only)"),
     BotCommand(command="history", description="🧠 How BTC moved after news"),
     BotCommand(command="similar", description="🧠 What happened after similar news"),
     BotCommand(command="settings", description="⚙️ Alerts, quiet hours, brief, time zone"),
@@ -99,7 +105,10 @@ async def main() -> None:
         similar=SimilarityEngine(db),
         patterns=PatternCache(db),
     )
-    app.forecast = ForecastEngine(db, hub, settings.price_history_exchange)
+    macro = MacroClient()
+    app.forecast = ForecastEngine(db, hub, settings.price_history_exchange, macro=macro)
+    app.vault = Vault.open(settings.vault_key, Path(settings.db_path).parent / "vault.key")
+    app.accounts = AccountReader()
     app.notifier = Notifier(bot, db, hub, app.patterns, app.similar)
 
     # Objects passed here are available to every handler by parameter name.
@@ -107,6 +116,7 @@ async def main() -> None:
     dp.include_router(settings_router)  # /start, home, settings
     dp.include_router(main_router)
     dp.include_router(insights_router)
+    dp.include_router(portfolio_router)
     dp.include_router(fallback_router)  # last: free text = coin lookup or news search
 
     history_job = HistoryImportJob(db, enabled=settings.history_import)
@@ -121,7 +131,7 @@ async def main() -> None:
     s.add("reminders", 60, ReminderJob(db, bot), first_delay=30, description="30 min before big releases")
     s.add("mood-snapshot", 3600, SnapshotJob(app), first_delay=60, description="hourly market mood")
     s.add("digest", 60, DigestJob(app, bot), first_delay=45, description="morning briefs")
-    s.add("forecast", 3600, ForecastJob(app), first_delay=90, description="BTC 4h/24h forecast + track record")
+    s.add("forecast", 3600, ForecastJob(app), first_delay=90, description="BTC/ETH/SOL forecast + track record")
     s.add("retention", 86400, RetentionJob(db, settings.retention_days), first_delay=600, description="delete old data")
 
     s.start()
@@ -138,6 +148,7 @@ async def main() -> None:
         await history_job.close()
         await collector.close()
         await app.market.close()
+        await macro.close()
         await hub.close()
         await db.close()
         await bot.session.close()

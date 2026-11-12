@@ -271,6 +271,7 @@ SHORTCUTS = {
     "help": {"help", "?", "помощь", "справка"},
     "technicals": {"ta", "technicals", "indicators", "индикаторы", "теханализ", "технический анализ"},
     "forecast": {"forecast", "predict", "prediction", "прогноз", "предсказание"},
+    "portfolio": {"portfolio", "balance", "balances", "wallet", "портфель", "баланс", "кошелек", "кошелёк"},
 }
 
 
@@ -301,6 +302,10 @@ async def free_text(message: Message, db: Database, hub: ExchangeHub, fg: FearGr
             from bot.forecast_ui import forecast_screen, technicals_screen
 
             screen = await (technicals_screen(app) if name == "technicals" else forecast_screen(app))
+        elif name == "portfolio" and message.from_user is not None:
+            from bot.portfolio_ui import portfolio_screen
+
+            screen = await portfolio_screen(app, message.from_user.id)
         else:
             screen = (screens.HELP, None)
         await message.answer(screen[0], reply_markup=screen[1])

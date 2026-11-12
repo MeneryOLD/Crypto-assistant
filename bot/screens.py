@@ -28,7 +28,7 @@ BTN_NEWS, BTN_TOP, BTN_MARKETS = "📰 News", "🔥 Top", "💹 Markets"
 BTN_HISTORY, BTN_ALERTS, BTN_STATUS = "🧠 History", "🔔 Alerts", "📡 Status"
 BTN_SENTIMENT, BTN_CALENDAR, BTN_DIGEST = "📊 Sentiment", "📅 Calendar", "☀️ Digest"
 BTN_HOME, BTN_SETTINGS, BTN_HELP = "🏠 Home", "⚙️ Settings", "❓ Help"
-BTN_FORECAST = "🔮 Forecast"
+BTN_FORECAST, BTN_PORTFOLIO = "🔮 Forecast", "💼 Portfolio"
 
 # Alerts, Digest and Status now live inside ⚙️ Settings; their old buttons still work for older keyboards.
 MAIN_MENU = ReplyKeyboardMarkup(
@@ -36,6 +36,7 @@ MAIN_MENU = ReplyKeyboardMarkup(
         [KeyboardButton(text=BTN_HOME), KeyboardButton(text=BTN_TOP), KeyboardButton(text=BTN_NEWS)],
         [KeyboardButton(text=BTN_SENTIMENT), KeyboardButton(text=BTN_MARKETS), KeyboardButton(text=BTN_CALENDAR)],
         [KeyboardButton(text=BTN_FORECAST), KeyboardButton(text=BTN_HISTORY), KeyboardButton(text=BTN_SETTINGS)],
+        [KeyboardButton(text=BTN_PORTFOLIO)],
     ],
     resize_keyboard=True,
     is_persistent=True,
@@ -152,8 +153,9 @@ HELP = "\n".join(
         f'{BTN_SENTIMENT} — market mood 0–100: Fear &amp; Greed, news tone, futures positioning, liquidity',
         f'{BTN_MARKETS} — prices, funding rates and order books on Binance, Bybit, OKX, Kraken',
         f'{BTN_CALENDAR} — CPI, jobs, Fed and other releases that move markets, in your time zone',
-        f'{BTN_FORECAST} — BTC up or down in 4 h / 24 h: probability from all signals, tested accuracy, live record',
+        f'{BTN_FORECAST} — BTC, ETH, SOL in 4 h / 24 h: direction, likely price range, chance of a big move, macro &amp; flow context',
         f'{BTN_HISTORY} — how BTC moved after news; patterns by topic',
+        f'{BTN_PORTFOLIO} — your balances on Binance, Bybit, OKX and 6 more via a read-only API key',
         f'{BTN_SETTINGS} — alerts, quiet hours, morning brief, time zone, pause, system status',
         '',
         '<b>Just type:</b>',

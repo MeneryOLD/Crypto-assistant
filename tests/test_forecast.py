@@ -7,6 +7,8 @@ from datetime import timedelta
 import pytest
 
 from analysis import forecast as fc
+from analysis import volatility as vol
+from analysis.technicals import Signal
 from bot.forecast_ui import forecast_line, forecast_screen
 from storage.db import Database, NewsItem, Reaction, utcnow
 from tests.test_insights import _app
@@ -110,16 +112,58 @@ def test_forecast_line_marks_unproven_edge():
 async def test_forecast_screen(db):
     app = _app(db)
 
-    class Engine:
-        latest = _fake_forecast()
+    fake = _fake_forecast()
+    o = fake.outlooks[4]
+    rm = vol.RangeModel(4, [0.0], False, 1.0, 2.0, [0.5, 1.0, 2.0], 0.69, 0.95, 900)
+    o.range = vol.Range(o.low, o.high, 72000.0, 76000.0, 1.0, 0.31, rm)
+    fake.context = [Signal("Macro", "VIX (stock-market fear)", "27.0", "high fear in stocks", -1)]
 
-        async def run(self, force=False):
-            return self.latest
+    class Engine:
+        def __init__(self):
+            self.forecasts = {"BTC": fake}
+
+        def get(self, coin):
+            return self.forecasts.get(coin)
+
+        async def run(self, force=False, coin="BTC"):
+            return self.forecasts.get(coin)
 
     app.forecast = Engine()  # type: ignore[assignment]
     text, kb = await forecast_screen(app)
     assert "BTC forecast" in text and "No reliable edge" in text and "leans up (66%)" in text
     assert "8.0% below" in text and "Does news tone predict the price?" in text and "45%" in text
+    assert "19 in 20" in text and "over ±1%: <b>31%</b>" in text and "held the price <b>69%</b>" in text
+    assert "Market context" in text and "VIX" in text
     for row in kb.inline_keyboard:
         for b in row:
             assert len(b.callback_data.encode()) <= 64
+    text, _ = await forecast_screen(app, "eth")  # not trained yet
+    assert "ETH forecast is being prepared" in text
+
+
+def test_range_model_adapts_to_volatility_and_is_calibrated():
+    # calm and wild regimes alternate every 10 days: ranges must widen in wild periods and hold ~68 % / 95 %
+    rnd = random.Random(3)
+    closes, times = [100.0], [0]
+    for i in range(1, 6000):
+        sigma = 0.002 if (i // 240) % 2 == 0 else 0.012
+        closes.append(closes[-1] * math.exp(rnd.gauss(0, sigma)))
+        times.append(i * HOUR)
+    model = vol.train_range(closes, times, 4)
+    assert model is not None and 0.6 < model.held68 < 0.76 and 0.9 < model.held95 < 0.99
+    wild_end = 240 * 24 - 1  # ends inside block 23, which is wild ((5758 // 240) % 2 == 1)
+    calm = vol.predict_range(model, closes[: 240 * 23 - 1], times[: 240 * 23 - 1])
+    wild = vol.predict_range(model, closes[:wild_end], times[:wild_end])
+    assert wild.high68 / wild.low68 > 2 * (calm.high68 / calm.low68 - 1) + 1  # wild range at least twice as wide
+    assert wild.big_move_prob > calm.big_move_prob
+    assert calm.low95 < calm.low68 < calm.high68 < calm.high95
+
+
+async def test_forecast_record_is_per_coin(db):
+    made = utcnow() - timedelta(hours=5)
+    await db.add_forecast(made, 4, 0.7, 100.0, False, coin="ETH")
+    [due] = await db.due_forecasts()
+    assert due.coin == "ETH"
+    await db.resolve_forecast(due.id, 99.0)
+    assert await db.forecast_record(4, coin="ETH") == (1, 0, 1, 0)
+    assert await db.forecast_record(4) == (0, 0, 0, 0)

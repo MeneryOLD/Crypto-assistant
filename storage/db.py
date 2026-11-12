@@ -190,6 +190,7 @@ class ForecastRow(Base):
 
     id: Mapped[int] = mapped_column(primary_key=True)
     made_at: Mapped[datetime] = mapped_column(DateTime, index=True)
+    coin: Mapped[str] = mapped_column(String(10), default="BTC")
     horizon: Mapped[int] = mapped_column(Integer)  # hours
     prob_up: Mapped[float] = mapped_column(Float)
     price: Mapped[float] = mapped_column(Float)
@@ -205,6 +206,20 @@ class KeyValue(Base):
 
     key: Mapped[str] = mapped_column(String(100), primary_key=True)
     value: Mapped[str] = mapped_column(Text)
+
+
+class ExchangeAccount(Base):
+    """A user's own exchange account, connected with a read-only API key. Credentials are stored encrypted."""
+
+    __tablename__ = "exchange_accounts"
+    __table_args__ = (UniqueConstraint("user_id", "exchange"),)
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    user_id: Mapped[int] = mapped_column(BigInteger, index=True)  # Telegram id
+    exchange: Mapped[str] = mapped_column(String(20))
+    credentials: Mapped[str] = mapped_column(Text)  # encrypted JSON: apiKey, secret, password
+    added_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
+    permissions: Mapped[str] = mapped_column(String(100), default="")  # what the exchange said the key may do
 
 
 # Columns added after the first release: added to existing databases on startup.
@@ -224,6 +239,7 @@ MIGRATIONS = {
         "quiet_end": "INTEGER NOT NULL DEFAULT -1",
         "quiet_critical": "BOOLEAN NOT NULL DEFAULT 1",
     },
+    "forecasts": {"coin": "VARCHAR(10) NOT NULL DEFAULT 'BTC'"},
     "news_items": {
         "importance": "INTEGER",
         "importance_reasons": "VARCHAR(300)",
@@ -759,9 +775,11 @@ class Database:
 
     # --- forecast track record ---------------------------------------------------------
 
-    async def add_forecast(self, made_at: datetime, horizon: int, prob_up: float, price: float, reliable: bool) -> None:
+    async def add_forecast(
+        self, made_at: datetime, horizon: int, prob_up: float, price: float, reliable: bool, coin: str = "BTC"
+    ) -> None:
         async with self.session() as s:
-            s.add(ForecastRow(made_at=made_at, horizon=horizon, prob_up=prob_up, price=price, reliable=reliable))
+            s.add(ForecastRow(made_at=made_at, coin=coin, horizon=horizon, prob_up=prob_up, price=price, reliable=reliable))
             await s.commit()
 
     async def due_forecasts(self) -> list[ForecastRow]:
@@ -781,13 +799,14 @@ class Database:
                 row.correct = (outcome_price > row.price) == (row.prob_up > 0.5)
             await s.commit()
 
-    async def forecast_record(self, horizon: int, days: int = 30) -> tuple[int, int, int, int]:
+    async def forecast_record(self, horizon: int, days: int = 30, coin: str = "BTC") -> tuple[int, int, int, int]:
         """(scored, correct, scored with a clear lean ≥ 55 % / ≤ 45 %, correct among those)."""
         async with self.session() as s:
             rows = (
                 await s.scalars(
                     select(ForecastRow).where(
                         ForecastRow.horizon == horizon,
+                        ForecastRow.coin == coin,
                         ForecastRow.correct.is_not(None),
                         ForecastRow.made_at >= utcnow() - timedelta(days=days),
                     )
@@ -796,6 +815,34 @@ class Database:
         clear = [r for r in rows if abs(r.prob_up - 0.5) >= 0.05]
         return len(rows), sum(1 for r in rows if r.correct), len(clear), sum(1 for r in clear if r.correct)
 
-    async def first_forecast_at(self) -> datetime | None:
+    async def first_forecast_at(self, coin: str = "BTC") -> datetime | None:
         async with self.session() as s:
-            return await s.scalar(select(func.min(ForecastRow.made_at)))
+            return await s.scalar(select(func.min(ForecastRow.made_at)).where(ForecastRow.coin == coin))
+
+    # --- connected exchange accounts ------------------------------------------------------
+
+    async def save_account(self, user_id: int, exchange: str, credentials: str, permissions: str = "") -> None:
+        async with self.session() as s:
+            row = await s.scalar(
+                select(ExchangeAccount).where(ExchangeAccount.user_id == user_id, ExchangeAccount.exchange == exchange)
+            )
+            if row is None:
+                s.add(ExchangeAccount(user_id=user_id, exchange=exchange, credentials=credentials, permissions=permissions))
+            else:
+                row.credentials, row.permissions, row.added_at = credentials, permissions, utcnow()
+            await s.commit()
+
+    async def accounts(self, user_id: int) -> list[ExchangeAccount]:
+        async with self.session() as s:
+            rows = await s.scalars(
+                select(ExchangeAccount).where(ExchangeAccount.user_id == user_id).order_by(ExchangeAccount.exchange)
+            )
+            return list(rows.all())
+
+    async def delete_account(self, user_id: int, exchange: str) -> bool:
+        async with self.session() as s:
+            result = await s.execute(
+                delete(ExchangeAccount).where(ExchangeAccount.user_id == user_id, ExchangeAccount.exchange == exchange)
+            )
+            await s.commit()
+            return bool(result.rowcount)

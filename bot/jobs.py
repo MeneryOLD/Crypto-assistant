@@ -244,7 +244,7 @@ class RetentionJob:
 
 
 class ForecastJob:
-    """Every hour: retrain, forecast BTC 4 h / 24 h, save it, and score earlier forecasts whose time has come."""
+    """Every hour: retrain, forecast BTC/ETH/SOL 4 h / 24 h, save them, and score earlier forecasts whose time has come."""
 
     def __init__(self, app: App):
         self.app = app
@@ -253,16 +253,16 @@ class ForecastJob:
         engine = self.app.forecast
         if engine is None:
             return
-        fc = await engine.run(force=True)
-        if fc is not None:
+        for fc in (await engine.run_all(force=True)).values():
             for hz, o in fc.outlooks.items():
-                await self.app.db.add_forecast(fc.made_at, hz, o.prob_up, fc.price, o.model.reliable)
+                await self.app.db.add_forecast(fc.made_at, hz, o.prob_up, fc.price, o.model.reliable, coin=fc.coin)
         due = await self.app.db.due_forecasts()
-        if due:
+        for coin in sorted({r.coin for r in due}):
+            rows = [r for r in due if r.coin == coin]
             prices = await prices_at(
-                self.app.hub, self.app.settings.price_history_exchange, "BTC",
-                [r.made_at + timedelta(hours=r.horizon) for r in due],
+                self.app.hub, self.app.settings.price_history_exchange, coin,
+                [r.made_at + timedelta(hours=r.horizon) for r in rows],
             )
-            for r in due:
+            for r in rows:
                 if (p := prices.get(minute_ms(r.made_at + timedelta(hours=r.horizon)))) is not None:
                     await self.app.db.resolve_forecast(r.id, p)

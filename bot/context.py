@@ -10,12 +10,14 @@ from analysis.forecast import ForecastEngine
 from analysis.patterns import PatternCache
 from analysis.sentiment import Mood, NewsSentiment, market_mood, news_sentiment
 from analysis.similar import SimilarityEngine
+from collectors.accounts import AccountReader
 from collectors.exchanges import ExchangeHub, Ticker
 from collectors.fear_greed import FearGreed, FearGreedClient
 from collectors.market_data import GlobalMarket, Liquidity, MarketDataClient, Network, Positioning
 from collectors.news import NewsCollector
 from config import Settings
 from storage.db import Database
+from storage.vault import Vault
 
 if TYPE_CHECKING:
     from bot.notifier import Notifier
@@ -35,6 +37,8 @@ class App:
     scheduler: Scheduler | None = None
     forecast: ForecastEngine | None = None
     notifier: Notifier | None = None
+    vault: Vault | None = None  # encrypts users' exchange API keys
+    accounts: AccountReader | None = None
 
     def is_admin(self, telegram_id: int) -> bool:
         return telegram_id in self.settings.admin_list

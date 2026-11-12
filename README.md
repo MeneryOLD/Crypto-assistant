@@ -57,9 +57,13 @@ alerts, choose a morning-brief time. Everything can be changed later in ⚙️ S
 | 📊 Sentiment | Market mood 0–100 with its components, Fear & Greed history, news tone, funding, long/short, open interest, liquidity, network |
 | 💹 Markets | A coin across exchanges, funding rates, order book per exchange, buy/sell gap |
 | 📅 Calendar | This/next week's economic releases in the user's time zone, impact filter, reminders toggle |
+| 🔮 Forecast | BTC, ETH, SOL: up or down in 4 h / 24 h, a volatility-model price range (2-in-3 and 19-in-20, with how often it held on unseen data), chance of a big move, 🌍 market context (order flow, futures premium, funding, Coinbase premium, stablecoin supply, S&P 500, Nasdaq, dollar, VIX, gold, US 10-year yield), walk-forward tested accuracy and a live track record; 📐 Technicals: 20/50/200-day and 200-week MA, RSI, MACD, Bollinger, ATR, support/resistance |
 | 🧠 History | Biggest BTC moves after news; average moves by topic and by category |
+| 💼 Portfolio | Your balances across Binance, Bybit, OKX, Kraken, KuCoin, Bitget, Gate, MEXC, HTX via **read-only** API keys: total in USD, 24 h P&L, each coin, each exchange |
 | ⚙️ Settings | One place for everything: alerts (level, categories, test), 🌙 quiet hours (critical news can still come through), ⏸ pause 1 h / until morning, morning brief and time zone, release reminders, system status, run setup again |
 | ❓ Help | How to use the bot |
+
+**Exchange keys are handled carefully:** only read-only keys are needed; keys that can withdraw are refused (checked with the exchange on Binance, OKX and Bybit); the message with the key is deleted from the chat at once; keys are encrypted (Fernet) with `VAULT_KEY` or `data/vault.key`; connecting works only in a private chat; the bot has no code that places orders or moves funds.
 
 Every alert has 📖 Details, 🧠 Similar past events and 🔕 pause buttons (1 h / until morning). Typing a word
 such as `settings`, `calendar`, `mood` or `top` (also in Russian: `настройки`, `календарь`…) opens that screen.
@@ -131,7 +135,7 @@ failing sources, import progress).
 
 ```text
 bot/
-  main.py               entry point: services, scheduler (10 jobs), routers
+  main.py               entry point: services, scheduler (11 jobs), routers
   context.py            App (shared services) + market_view(): the full market snapshot
   scheduler.py          job runner with health tracking (last run, failures, duration)
   jobs.py               news, scoring, price memory, archive import, calendar, reminders, snapshots, digests, retention
@@ -139,6 +143,9 @@ bot/
   handlers.py           news, top, markets, history, alerts, status, free-text search
   handlers_insights.py  sentiment, calendar, digest, similar events, admin
   handlers_settings.py  /start setup, home dashboard, settings, quiet hours, pause
+  handlers_portfolio.py connect an exchange (read-only key), portfolio, disconnect
+  forecast_ui.py        forecast and technical-analysis screens
+  portfolio_ui.py       portfolio screens
   settings_ui.py        setup / settings / quiet hours / home screens
   screens.py            news / markets / history / alerts / status screens
   insights.py           sentiment / calendar / digest / similar / admin screens
@@ -147,6 +154,8 @@ collectors/
   news.py               114 sources: Telegram, RSS, Google News, Reddit, CryptoPanic, X
   history.py            GDELT archive import
   exchanges.py          ccxt: tickers, order books, candles, funding
+  accounts.py           users' own accounts: balances, USD value, key-permission check
+  macro.py              Yahoo (S&P, Nasdaq, dollar, VIX, gold, yields), Binance flow + futures premium, Coinbase, stablecoins
   market_data.py        global market, futures positioning, stablecoins, network
   calendar.py           economic calendar
   fear_greed.py         Fear & Greed with 90-day history
@@ -156,9 +165,14 @@ analysis/
   similar.py            similar past events → outlook and signal
   patterns.py           averages by topic, same-story detection
   reactions.py          BTC/ETH price around every item from 1-minute candles
+  technicals.py         moving averages, RSI, MACD, Bollinger, ATR, levels, volume
+  forecast.py           BTC/ETH/SOL 4 h / 24 h direction model, walk-forward test, news-tone check
+  volatility.py         price-range model (realized volatility, VIX), calibrated on unseen data
+  market_context.py     order flow, futures, US demand, liquidity and macro readings
 storage/
   db.py                 SQLite (WAL) models, automatic column migrations, queries
-tests/                  112 tests, no network needed
+  vault.py              encryption of users' exchange API keys
+tests/                  137 tests, no network needed
 docs/                   ARCHITECTURE.md, DEPLOY.md (free 24/7 hosting), screenshots/
 tools/render_screens.py regenerates the README screenshots from live bot output
 ```

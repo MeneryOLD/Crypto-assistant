@@ -149,18 +149,19 @@ async def cb_admin(query: CallbackQuery, app: App) -> None:
 
 @router.message(Command("forecast", "predict"))
 @router.message(F.text == BTN_FORECAST)
-async def cmd_forecast(message: Message, app: App) -> None:
+async def cmd_forecast(message: Message, app: App, command: CommandObject | None = None) -> None:
+    coin = ((command.args or "").split() or ["BTC"])[0] if command else "BTC"
     await _typing(message)
-    text, kb = await forecast_screen(app)
+    text, kb = await forecast_screen(app, coin)
     await message.answer(text, reply_markup=kb)
 
 
 @router.callback_query(ForecastCB.filter())
 async def cb_forecast(query: CallbackQuery, callback_data: ForecastCB, app: App) -> None:
-    await _ack(query, "Updating the forecast…" if callback_data.refresh else None)
+    await _ack(query, "Updating the forecast…" if callback_data.refresh else "Loading…")
     if callback_data.refresh and app.forecast:
-        await app.forecast.run()  # cached for 15 minutes
-    text, kb = await forecast_screen(app)
+        await app.forecast.run(coin=callback_data.coin)  # cached for 15 minutes
+    text, kb = await forecast_screen(app, callback_data.coin)
     await _edit(query, text, kb, acked=True)
 
 

@@ -23,6 +23,7 @@ class Settings(BaseSettings):
     # --- exchanges ---
     exchanges: str = "binance,bybit,okx,kraken"  # ccxt ids; public data only
     price_history_exchange: str = "binance"  # its 1-minute candles feed the price memory
+    vault_key: str | None = None  # encrypts users' exchange API keys; empty = key file next to the database
 
     # --- history ---
     history_import: bool = True  # import ~90 days of past headlines from the GDELT archive on first start

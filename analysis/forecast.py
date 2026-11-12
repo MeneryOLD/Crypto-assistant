@@ -1,4 +1,4 @@
-"""BTC direction forecast for the next 4 h and 24 h, learned from the bot's own data.
+"""BTC / ETH / SOL forecast for the next 4 h and 24 h: direction, and how far the price is likely to move.
 
 How it works
 ------------
@@ -13,6 +13,12 @@ How it works
    never saw, against the simple baseline "always guess the more common direction". The screen shows
    both numbers; if the model doesn't beat the baseline, the forecast says there is no reliable edge.
 5. The final model is refitted on all data and applied to the latest hour.
+6. Price ranges come from a separate volatility model (analysis/volatility.py): the size of moves is far
+   more predictable than their direction, and it is tested the same way.
+
+A 2-year experiment (5 walk-forward folds, BTC/ETH/SOL) found that adding macro markets, futures basis,
+Coinbase premium, taker flow and stablecoin supply did not improve direction accuracy (all within luck of
+50 %), so those are shown as market context rather than fed to the direction model.
 
 The output is a probability, not a promise.
 """
@@ -29,9 +35,12 @@ from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
 
 from analysis import technicals as ta
+from analysis import volatility as vm
+from analysis.market_context import market_context
 from analysis.patterns import WINDOW_MINUTES
 from collectors.exchanges import ExchangeHub
 from collectors.fear_greed import fetch_history as fear_greed_history
+from collectors.macro import MacroClient
 from storage.db import Database, NewsItem
 
 log = logging.getLogger(__name__)
@@ -40,6 +49,8 @@ HOUR_MS = 3_600_000
 DAYS = 730  # two years of hourly prices: bull and bear phases, ~5 months of out-of-sample test
 STEP = 4  # use every 4th hour as a training example (neighbouring hours add little new information)
 HORIZONS = (4, 24)  # hours
+COINS = ("BTC", "ETH", "SOL")
+L2 = 50.0  # strong shrinkage: in testing it gave better-calibrated (less overconfident) probabilities
 FEATURES: tuple[tuple[str, str], ...] = (
     ("ret_4h", "4-hour move"),
     ("ret_24h", "24-hour move"),
@@ -76,6 +87,8 @@ class History:
     news: dict[int, tuple[float, float, int]]  # hour ms -> (bullish weight, bearish weight, important count)
     daily: list[list[float]] = field(default_factory=list)  # daily candles (open-time ms first), oldest first
     weekly: list[list[float]] = field(default_factory=list)  # weekly candles
+    coin: str = "BTC"
+    vix: list[tuple[int, float]] = field(default_factory=list)  # hourly VIX (for the range model)
     _ta: dict = field(default_factory=dict, repr=False)  # precomputed indicator series
 
     def ta(self) -> dict:
@@ -318,12 +331,12 @@ def train(h: History, horizon: int) -> Model | None:
     train_x, train_y = xs[: split - horizon], ys[: split - horizon]  # gap: no overlap between train labels and test
     test_x, test_y = xs[split:], ys[split:]
     sc = Scaler.fit(train_x)
-    w = fit_logistic([sc(x) for x in train_x], train_y)
+    w = fit_logistic([sc(x) for x in train_x], train_y, l2=L2)
     hits = sum(1 for x, y in zip(test_x, test_y, strict=True) if (predict(w, sc(x)) > 0.5) == bool(y))
     majority = 1 if sum(train_y) * 2 >= len(train_y) else 0
     base = sum(1 for y in test_y if y == majority)
     full_sc = Scaler.fit(xs)
-    full_w = fit_logistic([full_sc(x) for x in xs], ys)
+    full_w = fit_logistic([full_sc(x) for x in xs], ys, l2=L2)
     return Model(horizon, names, full_w, full_sc, len(xs), hits / len(test_y), base / len(test_y), len(test_y))
 
 
@@ -343,6 +356,7 @@ class Outlook:
     high: float
     drivers: list[Driver]
     model: Model
+    range: vm.Range | None = None  # from the volatility model (low/high above are its 68 % range)
 
     @property
     def verdict(self) -> str:
@@ -373,9 +387,11 @@ class Forecast:
     price: float
     outlooks: dict[int, Outlook] = field(default_factory=dict)
     tone: ToneCheck | None = None
+    coin: str = "BTC"
+    context: list = field(default_factory=list)  # list[technicals.Signal]: macro, flow, derivatives
 
 
-def outlook(model: Model, h: History) -> Outlook | None:
+def outlook(model: Model, h: History, range_model: vm.RangeModel | None = None) -> Outlook | None:
     i = len(h.closes) - 1
     f = features_at(h, i)
     if f is None:
@@ -389,6 +405,9 @@ def outlook(model: Model, h: History) -> Outlook | None:
     rets = [h.closes[k] / h.closes[k - 1] - 1 for k in range(i - 71, i + 1)]
     sigma = statistics.pstdev(rets) * math.sqrt(model.horizon)  # ~68 % of moves fall within ±1 sigma
     price = h.closes[i]
+    if range_model is not None:
+        r = vm.predict_range(range_model, h.closes, h.times, h.vix)
+        return Outlook(model.horizon, p, r.low68, r.high68, drivers, model, r)
     return Outlook(model.horizon, p, price * (1 - sigma), price * (1 + sigma), drivers, model)
 
 
@@ -413,21 +432,40 @@ def tone_check(reactions: list) -> ToneCheck:  # list[storage.db.Reaction]
     return ToneCheck(b_up, b_n, s_up, s_n, a_up, a_n)
 
 
+def _train_all(h: History, horizon: int) -> tuple[Model | None, vm.RangeModel | None]:
+    return train(h, horizon), vm.train_range(h.closes, h.times, horizon, h.vix)
+
+
 class ForecastEngine:
-    """Loads history, trains both horizons and keeps the latest forecast (refreshed at most every 15 min)."""
+    """Loads history, trains both horizons per coin and keeps the latest forecasts (refreshed at most every 15 min)."""
 
-    def __init__(self, db: Database, hub: ExchangeHub, exchange: str = "binance", ttl: float = 900):
-        self.db, self.hub, self.exchange, self.ttl = db, hub, exchange, ttl
-        self.latest: Forecast | None = None
-        self._at = 0.0
+    def __init__(self, db: Database, hub: ExchangeHub, exchange: str = "binance", ttl: float = 900,
+                 macro: MacroClient | None = None, coins: tuple[str, ...] = COINS):
+        self.db, self.hub, self.exchange, self.ttl, self.macro, self.coins = db, hub, exchange, ttl, macro, coins
+        self.forecasts: dict[str, Forecast] = {}
+        self._at: dict[str, float] = {}
+        self._locks: dict[str, asyncio.Lock] = {}
 
-    async def load_history(self) -> History:
-        now_ms = int(time.time() * 1000)
-        since = now_ms - DAYS * 24 * HOUR_MS
+    @property
+    def latest(self) -> Forecast | None:
+        """The BTC forecast (Home, digest)."""
+        return self.forecasts.get("BTC")
+
+    def get(self, coin: str) -> Forecast | None:
+        return self.forecasts.get(coin.upper())
+
+    async def _hourly(self, coin: str, since: int, now_ms: int) -> tuple[list[int], list[float]]:
+        if self.macro is not None:
+            try:
+                k = await self.macro.klines(coin, since)
+                if len(k.times) > 400:
+                    return k.times, k.closes
+            except Exception as exc:
+                log.warning("forecast: Binance klines for %s unavailable, using the exchange hub: %s", coin, exc)
         candles: list[list[float]] = []
         cursor = since
         while cursor < now_ms:
-            batch = await self.hub.candles(self.exchange, "BTC", cursor, 1000, timeframe="1h")
+            batch = await self.hub.candles(self.exchange, coin, cursor, 1000, timeframe="1h")
             if not batch:
                 break
             candles += batch
@@ -435,41 +473,82 @@ class ForecastEngine:
             if len(batch) < 1000:
                 break
         candles = [c for c in candles if int(c[0]) + HOUR_MS <= now_ms]  # closed candles only
+        return [int(c[0]) for c in candles], [float(c[4]) for c in candles]
+
+    async def load_history(self, coin: str = "BTC") -> History:
+        now_ms = int(time.time() * 1000)
+        since = now_ms - DAYS * 24 * HOUR_MS
+        times, closes = await self._hourly(coin, since, now_ms)
         try:
-            funding = await self.hub.funding_history(self.exchange, "BTC", since)
+            funding = await self.hub.funding_history(self.exchange, coin, since)
         except Exception as exc:  # funding is one feature among many
             log.warning("forecast: funding history unavailable: %s", exc)
             funding = []
         # daily candles back far enough for a 200-day MA at the start of the window; weekly for the 200-week MA
-        daily = await self.hub.candles(self.exchange, "BTC", since - 230 * 24 * HOUR_MS, 1000, timeframe="1d")
-        weekly = await self.hub.candles(self.exchange, "BTC", since - 1450 * 24 * HOUR_MS, 1000, timeframe="1w")
+        daily = await self.hub.candles(self.exchange, coin, since - 230 * 24 * HOUR_MS, 1000, timeframe="1d")
+        weekly = await self.hub.candles(self.exchange, coin, since - 1450 * 24 * HOUR_MS, 1000, timeframe="1w")
         fg = await fear_greed_history(DAYS + 10)
-        start = datetime.now(UTC).replace(tzinfo=None) - timedelta(days=DAYS)
-        items = await self.db.news_between(start, datetime.now(UTC).replace(tzinfo=None))
-        return History(
-            times=[int(c[0]) for c in candles],
-            closes=[float(c[4]) for c in candles],
-            fear_greed=fg,
-            funding=sorted(funding),
-            news=news_by_hour(items),
-            daily=daily,
-            weekly=weekly,
-        )
+        vix: list[tuple[int, float]] = []
+        if self.macro is not None:
+            try:
+                vix = await self.macro.yahoo("vix", since)
+            except Exception as exc:
+                log.warning("forecast: VIX unavailable: %s", exc)
+        news: dict = {}
+        if coin == "BTC":  # news reactions are recorded against BTC
+            start = datetime.now(UTC).replace(tzinfo=None) - timedelta(days=DAYS)
+            news = news_by_hour(await self.db.news_between(start, datetime.now(UTC).replace(tzinfo=None)))
+        return History(times=times, closes=closes, fear_greed=fg, funding=sorted(funding), news=news,
+                       daily=daily, weekly=weekly, coin=coin, vix=vix)
 
-    async def run(self, force: bool = False) -> Forecast | None:
-        if not force and self.latest is not None and time.monotonic() - self._at < self.ttl:
-            return self.latest
-        h = await self.load_history()
-        if len(h.closes) < 400:
-            log.warning("forecast: not enough price history (%d hours)", len(h.closes))
-            return self.latest
-        fc = Forecast(made_at=datetime.now(UTC).replace(tzinfo=None), price=h.closes[-1])
-        for hz in HORIZONS:
-            # CPU-heavy: train in a thread so the bot keeps answering while it runs
-            if (model := await asyncio.to_thread(train, h, hz)) and (o := outlook(model, h)):
-                fc.outlooks[hz] = o
-                log.info("forecast %dh: P(up)=%.2f test acc %.3f vs base %.3f (n=%d)",
-                         hz, o.prob_up, model.test_acc, model.base_acc, model.test_n)
-        fc.tone = tone_check(await self.db.all_reactions(days=DAYS))
-        self.latest, self._at = fc, time.monotonic()
-        return fc
+    async def _context(self, coin: str, h: History) -> list:
+        if self.macro is None:
+            return []
+        since = h.times[-1] - 60 * 24 * HOUR_MS if h.times else int(time.time() * 1000) - 60 * 24 * HOUR_MS
+        got = await asyncio.gather(
+            self.macro.klines(coin, h.times[0] if h.times else since), self.macro.premium(coin, since),
+            self.macro.coinbase(coin, since), self.macro.macro_all(since), self.macro.stablecoins(since),
+            return_exceptions=True,
+        )
+        for g in got:
+            if isinstance(g, BaseException):
+                log.warning("forecast: some market context for %s unavailable: %s", coin, g)
+        k, prem, cb, mac, stables = (None if isinstance(g, BaseException) else g for g in got)
+        try:
+            return market_context(coin, k, prem or [], cb or [], mac or {}, stables or [], h.funding)
+        except Exception:  # context is extra information; never block the forecast
+            log.exception("forecast: market context for %s failed", coin)
+            return []
+
+    async def run(self, force: bool = False, coin: str = "BTC") -> Forecast | None:
+        coin = coin.upper()
+        async with self._locks.setdefault(coin, asyncio.Lock()):
+            cached = self.forecasts.get(coin)
+            if not force and cached is not None and time.monotonic() - self._at.get(coin, 0) < self.ttl:
+                return cached
+            h = await self.load_history(coin)
+            if len(h.closes) < 400:
+                log.warning("forecast: not enough price history for %s (%d hours)", coin, len(h.closes))
+                return cached
+            fc = Forecast(made_at=datetime.now(UTC).replace(tzinfo=None), price=h.closes[-1], coin=coin)
+            for hz in HORIZONS:
+                # CPU-heavy: train in a thread so the bot keeps answering while it runs
+                model, rmodel = await asyncio.to_thread(_train_all, h, hz)
+                if model and (o := outlook(model, h, rmodel)):
+                    fc.outlooks[hz] = o
+                    log.info("forecast %s %dh: P(up)=%.2f test acc %.3f vs base %.3f (n=%d); range held %s",
+                             coin, hz, o.prob_up, model.test_acc, model.base_acc, model.test_n,
+                             f"{rmodel.held68:.0%}/{rmodel.held95:.0%}" if rmodel else "n/a")
+            if coin == "BTC":
+                fc.tone = tone_check(await self.db.all_reactions(days=DAYS))
+            fc.context = await self._context(coin, h)
+            self.forecasts[coin], self._at[coin] = fc, time.monotonic()
+            return fc
+
+    async def run_all(self, force: bool = False) -> dict[str, Forecast]:
+        for coin in self.coins:  # one at a time: training is CPU-heavy
+            try:
+                await self.run(force, coin)
+            except Exception:
+                log.exception("forecast for %s failed", coin)
+        return dict(self.forecasts)
